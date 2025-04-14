@@ -1,4 +1,5 @@
-ext/
+data
+archive
 
 # Created by https://www.toptal.com/developers/gitignore/api/macos,python,visualstudiocode,jupyternotebooks
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,python,visualstudiocode,jupyternotebooks

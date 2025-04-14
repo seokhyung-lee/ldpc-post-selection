@@ -1,0 +1,9 @@
+arviz==0.20.0
+Cython==3.0.11
+ldpc==2.1.2
+matplotlib==3.10.1
+numpy==2.2.4
+scipy==1.15.2
+seaborn==0.13.2
+statsmodels==0.14.4
+stim==1.14.0
