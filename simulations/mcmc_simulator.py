@@ -9,8 +9,8 @@ import stim
 from scipy.sparse import csc_matrix
 from statsmodels.stats.proportion import proportion_confint
 
-from .decoder import BpLsdPsDecoder
-from .stim_tools import dem_to_parity_check
+from ..src.ldpc_post_selection.decoder import BpLsdPsDecoder
+from ..src.ldpc_post_selection.stim_tools import dem_to_parity_check
 
 
 class BpLsdPsMCMCSimulator:

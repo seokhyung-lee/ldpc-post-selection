@@ -1,5 +1,13 @@
 # Sliding Window with Guided Decimation Guessing (GDG) Decoding
 
+**Note:** The codes inside this folder are originated from [gongaa/SlidingWindowDecoder](https://github.com/gongaa/SlidingWindowDecoder), distributed under the MIT license.
+*ldpc-post-selection* requires this external library for generating bivariate bicycle 
+code circuits.
+
+The following is the original README of the repo.
+
+---
+
 This repo contains the source codes of the paper [Toward Low-latency Iterative Decoding of QLDPC Codes Under Circuit-Level Noise](https://arxiv.org/pdf/2403.18901.pdf).
 
 You need to install Cython to compile the source codes as follows.

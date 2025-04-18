@@ -1,8 +1,8 @@
-from typing import Literal
-
 import stim
 
-from .ext.SlidingWindowDecoder.src.build_circuit import build_circuit
+from .ext.SlidingWindowDecoder.src.build_circuit import (
+    build_circuit as build_BB_circuit_swd,
+)
 from .ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
 
 
@@ -52,6 +52,22 @@ def build_surface_code_circuit(
     return circuit
 
 
+def get_BB_distance(n: int) -> int:
+    distance_dict = {
+        72: 6,
+        90: 10,
+        108: 10,
+        144: 12,
+        288: 18,
+        360: 24,
+        756: 34,
+    }
+    if n not in distance_dict:
+        raise ValueError(f"Unsupported code size: {n}")
+
+    return distance_dict[n]
+
+
 def build_BB_circuit(*, n: int, T: int, p: float) -> stim.Circuit:
     """
     Build a stim circuit for a Bivariate Bicycle (BB) code.
@@ -94,10 +110,10 @@ def build_BB_circuit(*, n: int, T: int, p: float) -> stim.Circuit:
     elif n == 756:  # d<=34
         args = 21, 18, [3], [10, 17], [3, 19], [5]
     else:
-        raise ValueError
+        raise ValueError(f"Unsupported code size: {n}")
 
     code, A_list, B_list = create_bivariate_bicycle_codes(*args)
-    circuit = build_circuit(
+    circuit = build_BB_circuit_swd(
         code,
         A_list,
         B_list,
