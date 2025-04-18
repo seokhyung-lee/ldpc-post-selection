@@ -4,6 +4,3 @@
 [submodule "src/ldpc_post_selection/ext/SlidingWindowDecoder"]
 	path = src/ldpc_post_selection/ext/SlidingWindowDecoder
 	url = https://github.com/seokhyung-lee/SlidingWindowDecoder.git
-[submodule "src/ldpc_post_selection/ext/ldpc"]
-	path = src/ldpc_post_selection/ext/ldpc
-	url = https://github.com/seokhyung-lee/ldpc.git
