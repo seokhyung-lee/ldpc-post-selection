@@ -98,40 +98,90 @@ def task_parallel(
     return df
 
 
+def simulate(
+    shots: int, p: float, n: int, data_dir: str, n_jobs: int, repeat: int
+) -> None:
+    """
+    Run the simulation for a given (p, n) and handle file I/O and skipping logic.
+
+    Parameters
+    ----------
+    shots : int
+        Total number of shots to simulate.
+    p : float
+        Error probability parameter.
+    n : int
+        Circuit parameter n.
+    data_dir : str
+        Directory to store output CSV files.
+    n_jobs : int
+        Number of parallel jobs.
+    repeat : int
+        Number of repeats for parallel execution.
+
+    Returns
+    -------
+    None
+        This function writes results to a CSV file and prints status messages.
+    """
+    file_path = os.path.join(data_dir, f"n{n}_p{p}.csv")
+    shots_to_run = shots
+    existing_rows = 0
+    if os.path.exists(file_path):
+        try:
+            # Only read the first column to minimize memory usage
+            existing_rows = pd.read_csv(file_path, usecols=[0]).shape[0]
+        except Exception as e:
+            print(
+                f"Warning: Could not read {file_path} due to error: {e}. Assuming 0 existing rows."
+            )
+            existing_rows = 0
+        if existing_rows >= shots:
+            print(
+                f"[SKIP] {existing_rows} shots (>= {shots}). Skipping simulation for p={p}, n={n}."
+            )
+            return
+        else:
+            shots_to_run = shots - existing_rows
+    else:
+        pass
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(
+        f"\n[{current_time}] Starting simulation for p={p}, n={n}, shots={shots_to_run}."
+    )
+    df = task_parallel(shots_to_run, p, n, n_jobs=n_jobs, repeat=repeat)
+    if os.path.exists(file_path):
+        # If file exists, append without header
+        df.to_csv(
+            file_path,
+            mode="a",
+            header=False,
+            index=False,
+            float_format="%.2f",
+        )
+    else:
+        # If file doesn't exist, create new file with header
+        df.to_csv(
+            file_path,
+            index=False,
+            float_format="%.2f",
+        )
+
+
 if __name__ == "__main__":
     plist = [1e-3, 2e-3, 3e-3, 4e-3, 5e-3]
     nlist = [144]
-    shots = 19
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
     os.makedirs(data_dir, exist_ok=True)
 
-    print("\n==== Starting simulations ====")
+    for shots in range(round(1e5), round(1e6) + 1, round(1e5)):
+        print(f"\n==== Starting simulations for {shots} shots ====")
 
-    for p in plist:
-        for n in nlist:
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(
-                f"\n[{current_time}] Starting simulation for p={p}, n={n}, shots={shots}."
-            )
-            df = task_parallel(shots, p, n, n_jobs=19, repeat=1)
-            file_path = os.path.join(data_dir, f"n{n}_p{p}_test4.csv")
-            if os.path.exists(file_path):
-                # If file exists, append without header
-                df.to_csv(
-                    file_path,
-                    mode="a",
-                    header=False,
-                    index=False,
-                    float_format="%.2f",
-                )
-            else:
-                # If file doesn't exist, create new file with header
-                df.to_csv(
-                    file_path,
-                    index=False,
-                    float_format="%.2f",
-                )
+        for p in plist:
+            for n in nlist:
+                simulate(shots, p, n, data_dir, n_jobs=19, repeat=100)
 
-    print("\n==== Simulations completed ====")
+        print(f"\n==== Simulations completed for {shots} shots ====")
