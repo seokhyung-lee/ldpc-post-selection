@@ -1,4 +1,5 @@
 import os
+import warnings
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -170,6 +171,11 @@ def simulate(
 
 
 if __name__ == "__main__":
+
+    warnings.filterwarnings(
+        "ignore", message="A worker stopped while some jobs were given to the executor."
+    )
+
     plist = [1e-3, 2e-3, 3e-3, 4e-3, 5e-3]
     nlist = [144]
 
@@ -177,7 +183,7 @@ if __name__ == "__main__":
     data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
     os.makedirs(data_dir, exist_ok=True)
 
-    for shots in range(round(1e5), round(1e6) + 1, round(1e5)):
+    for shots in range(round(1e5), round(1e7) + 1, round(1e5)):
         print(f"\n==== Starting simulations for {shots} shots ====")
 
         for p in plist:
