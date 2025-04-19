@@ -76,34 +76,23 @@ def task_parallel(
     # Create DataFrame from soft information
     df_soft = pd.DataFrame(soft_infos_flat)
 
-    # Sort columns of df_soft in alphabetical order (for consistent csv save)
-    df_soft = df_soft.reindex(sorted(df_soft.columns), axis=1)
-
     # Combine fail flag with soft info
     df = pd.concat([pd.Series(fails, name="fail"), df_soft], axis=1)
-
-    # Identify column types in soft info
-    float_cols = df.select_dtypes(include=["float"]).columns
-    # int_cols = df_soft.select_dtypes(include=["int"]).columns
-    bool_cols = df.select_dtypes(include=["bool"]).columns
-
-    # Round float columns to two decimal places
-    df[float_cols] = df[float_cols].round(2)
-
-    # Convert integer columns to int type (no change)
-    # df_soft[int_cols] = df_soft[int_cols].astype(int)
-
-    # Convert boolean columns to int (0 or 1)
-    df[bool_cols] = df[bool_cols].astype(int)
 
     return df
 
 
 def simulate(
-    shots: int, p: float, n: int, data_dir: str, n_jobs: int, repeat: int
+    shots: int,
+    p: float,
+    n: int,
+    data_dir: str,
+    n_jobs: int,
+    repeat: int,
+    max_shots_per_file: int = 1_000_000,
 ) -> None:
     """
-    Run the simulation for a given (p, n) and handle file I/O and skipping logic.
+    Run the simulation for a given (p, n) using Feather files and handle file I/O.
 
     Parameters
     ----------
@@ -114,60 +103,86 @@ def simulate(
     n : int
         Circuit parameter n.
     data_dir : str
-        Directory to store output CSV files.
+        Directory to store output Feather files.
     n_jobs : int
         Number of parallel jobs.
     repeat : int
         Number of repeats for parallel execution.
+    max_shots_per_file : int
+        Maximum number of shots per file.
 
     Returns
     -------
     None
-        This function writes results to a CSV file and prints status messages.
+        This function writes results to Feather files and prints status messages.
     """
-    file_path = os.path.join(data_dir, f"n{n}_p{p}.csv")
-    shots_to_run = shots
-    existing_rows = 0
-    if os.path.exists(file_path):
-        try:
-            # Only read the first column to minimize memory usage
-            existing_rows = pd.read_csv(file_path, usecols=[0]).shape[0]
-        except Exception as e:
-            print(
-                f"Warning: Could not read {file_path} due to error: {e}. Assuming 0 existing rows."
-            )
-            existing_rows = 0
-        if existing_rows >= shots:
-            print(
-                f"[SKIP] {existing_rows} shots (>= {shots}). Skipping simulation for p={p}, n={n}."
-            )
-            return
-        else:
-            shots_to_run = shots - existing_rows
-    else:
-        pass
+    basename = f"n{n}_p{p}"
 
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(
-        f"\n[{current_time}] Starting simulation for p={p}, n={n}, shots={shots_to_run}."
-    )
-    df = task_parallel(shots_to_run, p, n, n_jobs=n_jobs, repeat=repeat)
-    if os.path.exists(file_path):
-        # If file exists, append without header
-        df.to_csv(
-            file_path,
-            mode="a",
-            header=False,
-            index=False,
-            float_format="%.2f",
+    # Count existing numbered Feather files and total rows without loading full DataFrames
+    existing_files = []  # list of (index, path, rows)
+    total_existing = 0
+    idx = 1
+    while True:
+        fp = os.path.join(data_dir, f"{basename}_{idx}.feather")
+        if not os.path.exists(fp):
+            break
+        try:
+            data = pd.read_feather(fp)
+            rows = len(data)
+            del data
+        except Exception as e:
+            warnings.warn(f"Could not read metadata for {fp}: {e}. Assuming 0 rows.")
+            rows = 0
+        existing_files.append((idx, fp, rows))
+        total_existing += rows
+        idx += 1
+
+    # Skip if already simulated enough
+    if total_existing >= shots:
+        print(
+            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}."
         )
-    else:
-        # If file doesn't exist, create new file with header
-        df.to_csv(
-            file_path,
-            index=False,
-            float_format="%.2f",
+        return
+
+    remaining = shots - total_existing
+    # Append to existing files up to capacity, loading each file only when needed
+    for idx, fp, rows in existing_files:
+        if remaining <= 0:
+            break
+        if rows < max_shots_per_file:
+            to_run = min(max_shots_per_file - rows, remaining)
+            t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fname = os.path.basename(fp)
+            print(
+                f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, appending to {fname}"
+            )
+            # Load existing data only when appending
+            try:
+                df_existing = pd.read_feather(fp)
+            except Exception as e:
+                warnings.warn(
+                    f"Could not read {fp} for appending: {e}. Starting from new shots."
+                )
+                df_existing = pd.DataFrame()
+            df_new = task_parallel(to_run, p, n, n_jobs=n_jobs, repeat=repeat)
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            df_combined.to_feather(fp)
+            remaining -= to_run
+
+    # Create new numbered files for any remaining shots
+    next_idx = len(existing_files) + 1
+    while remaining > 0:
+        to_run = min(max_shots_per_file, remaining)
+        fp_new = os.path.join(data_dir, f"{basename}_{next_idx}.feather")
+        t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fname_new = os.path.basename(fp_new)
+        print(
+            f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, creating {fname_new}"
         )
+        df_new = task_parallel(to_run, p, n, n_jobs=n_jobs, repeat=repeat)
+        df_new.to_feather(fp_new)
+        remaining -= to_run
+        next_idx += 1
 
 
 if __name__ == "__main__":
@@ -178,16 +193,26 @@ if __name__ == "__main__":
 
     plist = [1e-3, 2e-3, 3e-3, 4e-3, 5e-3]
     nlist = [144]
+    max_shots_per_file = round(2e6)
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
     os.makedirs(data_dir, exist_ok=True)
 
-    for shots in range(round(1e5), round(1e7) + 1, round(1e5)):
+    for shots in range(round(1e6), round(1e7) + 1, round(1e6)):
         print(f"\n==== Starting simulations for {shots} shots ====")
 
         for p in plist:
             for n in nlist:
-                simulate(shots, p, n, data_dir, n_jobs=19, repeat=100)
+                t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                simulate(
+                    shots,
+                    p,
+                    n,
+                    data_dir,
+                    n_jobs=19,
+                    repeat=10,
+                    max_shots_per_file=max_shots_per_file,
+                )
 
         print(f"\n==== Simulations completed for {shots} shots ====")

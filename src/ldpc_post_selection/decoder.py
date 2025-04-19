@@ -18,7 +18,6 @@ class BpLsdPsDecoder:
     obs_matrix: Optional[csc_matrix]
     p: np.ndarray
     circuit: Optional[stim.Circuit]
-    soft_info_dtypes: Dict[str, Any]
 
     def __init__(
         self,
@@ -76,17 +75,6 @@ class BpLsdPsDecoder:
         self.p = p
         self.obs_matrix = obs
         self.circuit = circuit
-        self.soft_info_dtypes = {
-            "converge": "bool",
-            "cluster_size_sum": "int32",
-            "cluster_num": "int32",
-            "pred_bp_llr": "float64",
-            "cluster_bp_llr_sum": "float64",
-            "outside_cluster_bp_llr": "float64",
-            "pred_llr": "float64",
-            "cluster_llr_sum": "float64",
-            "outside_cluster_llr": "float64",
-        }
 
     def decode(
         self, detector_outcomes: np.ndarray | List[List[bool | int]]
@@ -129,7 +117,7 @@ class BpLsdPsDecoder:
         bit_llrs = np.log(self.p / (1 - self.p))
         pred_llr = float(np.sum(bit_llrs[pred]))
 
-        # Cluster size sum
+        # Cluster size sum & max cluster size
         cluster_stats = stats["individual_cluster_stats"]
         cluster_sizes = [
             data["final_bit_count"]
@@ -137,6 +125,7 @@ class BpLsdPsDecoder:
             if data["active"]
         ]
         cluster_size_sum = sum(cluster_sizes)
+        max_cluster_size = max(cluster_sizes) if cluster_sizes else 0
 
         # Cluster number
         cluster_num = len(cluster_stats)
@@ -158,6 +147,7 @@ class BpLsdPsDecoder:
         soft_info = {
             "converge": converge,
             "cluster_size_sum": cluster_size_sum,
+            "max_cluster_size": max_cluster_size,
             "cluster_num": cluster_num,
             "pred_bp_llr": pred_bp_llr,
             "cluster_bp_llr_sum": cluster_bp_llr_sum,
