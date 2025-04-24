@@ -2,10 +2,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import stim
-from ldpc.bplsd_decoder import BpLsdDecoder
 from scipy.sparse import csc_matrix
 
-from src.ldpc_post_selection.stim_tools import dem_to_parity_check
+from .ext.ldpc.src_python.ldpc.bplsd_decoder import BpLsdDecoder
+from .stim_tools import dem_to_parity_check
 
 
 class BpLsdPsDecoder:

@@ -4,6 +4,8 @@ Decoding with post-selection for general quantum LDPC codes
 
 ## Installation
 
+Requires Python >= 3.11.3
+
 ```bash
 git clone https://github.com/seokhyung-lee/ldpc-post-selection.git
 cd ldpc-post-selection

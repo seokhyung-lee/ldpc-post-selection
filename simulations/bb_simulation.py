@@ -12,13 +12,15 @@ from src.ldpc_post_selection.decoder import BpLsdPsDecoder
 
 
 def task(
-    shots: int, p: float, n: int
+    shots: int,
+    p: float,
+    n: int,
+    T: int,
 ) -> Tuple[np.ndarray, List[Dict[str, float | int | bool]]]:
     if shots == 0:
         return np.array([], dtype=bool), []
 
-    d = get_BB_distance(n)
-    circuit = build_BB_circuit(n=n, T=d, p=p)
+    circuit = build_BB_circuit(n=n, T=T, p=p)
     sampler = circuit.compile_detector_sampler()
     det, obs = sampler.sample(shots, separate_observables=True)
 
@@ -37,7 +39,7 @@ def task(
 
 
 def task_parallel(
-    shots: int, p: float, n: int, n_jobs: int, repeat: int = 10
+    shots: int, p: float, n: int, T: int, n_jobs: int, repeat: int = 10
 ) -> pd.DataFrame:
     """
     Run the BB `task` function in parallel and return results as a DataFrame.
@@ -50,6 +52,8 @@ def task_parallel(
         Error probability parameter.
     n : int
         Circuit parameter n.
+    T : int
+        Circuit parameter T.
     n_jobs : int
         Number of parallel jobs.
 
@@ -65,7 +69,7 @@ def task_parallel(
 
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(
-        delayed(task)(shots=chunk, p=p, n=n) for chunk in chunk_sizes
+        delayed(task)(shots=chunk, p=p, n=n, T=T) for chunk in chunk_sizes
     )
 
     # Unpack and combine results
@@ -86,6 +90,7 @@ def simulate(
     shots: int,
     p: float,
     n: int,
+    T: int,
     data_dir: str,
     n_jobs: int,
     repeat: int,
@@ -102,6 +107,8 @@ def simulate(
         Error probability parameter.
     n : int
         Circuit parameter n.
+    T : int
+        Circuit parameter T.
     data_dir : str
         Directory to store output Feather files.
     n_jobs : int
@@ -116,7 +123,7 @@ def simulate(
     None
         This function writes results to Feather files and prints status messages.
     """
-    basename = f"n{n}_p{p}"
+    basename = f"n{n}_p{p}_T{T}"
 
     # Count existing numbered Feather files and total rows without loading full DataFrames
     existing_files = []  # list of (index, path, rows)
@@ -140,7 +147,7 @@ def simulate(
     # Skip if already simulated enough
     if total_existing >= shots:
         print(
-            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}."
+            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}, T={T}."
         )
         return
 
@@ -154,7 +161,7 @@ def simulate(
             t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             fname = os.path.basename(fp)
             print(
-                f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, appending to {fname}"
+                f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, T={T}, appending to {fname}"
             )
             # Load existing data only when appending
             try:
@@ -164,7 +171,7 @@ def simulate(
                     f"Could not read {fp} for appending: {e}. Starting from new shots."
                 )
                 df_existing = pd.DataFrame()
-            df_new = task_parallel(to_run, p, n, n_jobs=n_jobs, repeat=repeat)
+            df_new = task_parallel(to_run, p, n, T, n_jobs=n_jobs, repeat=repeat)
             df_combined = pd.concat([df_existing, df_new], ignore_index=True)
             df_combined.to_feather(fp)
             remaining -= to_run
@@ -177,9 +184,9 @@ def simulate(
         t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         fname_new = os.path.basename(fp_new)
         print(
-            f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, creating {fname_new}"
+            f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, T={T}, creating {fname_new}"
         )
-        df_new = task_parallel(to_run, p, n, n_jobs=n_jobs, repeat=repeat)
+        df_new = task_parallel(to_run, p, n, T, n_jobs=n_jobs, repeat=repeat)
         df_new.to_feather(fp_new)
         remaining -= to_run
         next_idx += 1
@@ -192,7 +199,7 @@ if __name__ == "__main__":
     )
 
     plist = [1e-3, 2e-3, 3e-3, 4e-3, 5e-3]
-    nlist = [144]
+    nlist = [72, 108, 288]
     max_shots_per_file = round(2e6)
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -204,11 +211,13 @@ if __name__ == "__main__":
 
         for p in plist:
             for n in nlist:
+                T = get_BB_distance(n)
                 t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 simulate(
                     shots,
                     p,
                     n,
+                    T,
                     data_dir,
                     n_jobs=19,
                     repeat=10,
