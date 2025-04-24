@@ -4,7 +4,7 @@ import numpy as np
 import stim
 from scipy.sparse import csc_matrix
 
-from .ext.ldpc.src_python.ldpc.bplsd_decoder import BpLsdDecoder
+from ldpc.bplsd_decoder import BpLsdDecoder
 from .stim_tools import dem_to_parity_check
 
 
