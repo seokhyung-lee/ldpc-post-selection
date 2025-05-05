@@ -123,7 +123,7 @@ def simulate(
     None
         This function writes results to Feather files and prints status messages.
     """
-    basename = f"n{n}_p{p}_T{T}"
+    basename = f"n{n}_T{T}_p{p}"
 
     # Count existing numbered Feather files and total rows without loading full DataFrames
     existing_files = []  # list of (index, path, rows)
@@ -198,17 +198,20 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3, 2e-3, 3e-3, 4e-3, 5e-3]
-    nlist = [72, 108, 288]
+    plist = [2e-3, 3e-3, 4e-3, 5e-3]
+    # nlist = [72, 108, 144, 288]
+    # plist = [1e-3]
+    nlist = [144]
+
     max_shots_per_file = round(2e6)
+    total_shots = round(1e8)
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
     os.makedirs(data_dir, exist_ok=True)
 
-    for shots in range(round(1e6), round(1e7) + 1, round(1e6)):
+    for shots in range(0, total_shots + 1, max_shots_per_file)[1:]:
         print(f"\n==== Starting simulations for {shots} shots ====")
-
         for p in plist:
             for n in nlist:
                 T = get_BB_distance(n)
