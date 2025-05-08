@@ -2,9 +2,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import stim
+from ldpc.bplsd_decoder import BpLsdDecoder
 from scipy.sparse import csc_matrix
 
-from ldpc.bplsd_decoder import BpLsdDecoder
 from .stim_tools import dem_to_parity_check
 
 
@@ -18,6 +18,7 @@ class BpLsdPsDecoder:
     obs_matrix: Optional[csc_matrix]
     p: np.ndarray
     circuit: Optional[stim.Circuit]
+    bit_llrs: np.ndarray
 
     def __init__(
         self,
@@ -73,11 +74,14 @@ class BpLsdPsDecoder:
         self._bplsd.set_do_stats(True)
         self.H = H
         self.p = p
+        self.bit_llrs = np.log((1 - self.p) / self.p)
         self.obs_matrix = obs
         self.circuit = circuit
 
     def decode(
-        self, detector_outcomes: np.ndarray | List[List[bool | int]]
+        self,
+        detector_outcomes: np.ndarray | List[List[bool | int]],
+        norm_order: Optional[float] = None,
     ) -> Tuple[np.ndarray, float, float]:
         """
         Decode the detector measurement outcomes.
@@ -86,75 +90,110 @@ class BpLsdPsDecoder:
         ----------
         detector_outcomes : 1D array-like of bool/int
             Detector measurement outcomes.
+        norm_order : float, optional
+            Norm order for cluster LLR. If provided, the {norm_order}-norm of cluster LLRs
+            (each of which is the LLR sum of a cluster) will be computed and returned in
+            the soft_outputs dict.
 
         Returns
         -------
         preds : np.ndarray
-            Predicted codeword.
-        cluster_frac : float
-            Cluster fraction.
-        total_cluster_size : float
-            Total cluster size.
+            Predicted error pattern.
+        preds_bp : np.ndarray
+            Predicted error pattern from BP. It is valid only if the BP is converged.
+        converge : bool
+            Whether the BP is converged.
+        soft_outputs: Dict[str, float | int]
+            Soft outputs. Three types of LLRs are used:
+            - llr: LLRs for prior probabilities
+            - bp_llr: LLRs obtained from BP
+            - bp_llr_plus: LLRs obtained from BP, clipped to be non-negative
         """
         detector_outcomes = np.asarray(detector_outcomes, dtype=bool)
         if detector_outcomes.ndim > 1:
             raise ValueError("Detector outcomes must be a 1D array")
 
         bplsd = self._bplsd
-        pred: np.ndarray = bplsd.decode(detector_outcomes).astype(bool)
+        pred, pred_bp = bplsd.decode(detector_outcomes)
+        pred: np.ndarray = pred.astype(bool)
+        pred_bp: np.ndarray = pred_bp.astype(bool)
 
         ## Soft information
         stats: Dict[str, Any] = bplsd.statistics
+        soft_info: Dict[str, float | int] = {}
 
         # Convergence
         converge = bplsd.converge
 
-        # Prediction LLR
-        bit_bp_llrs = np.array(stats["bit_llrs"])
-        pred_bp_llr = float(np.sum(bit_bp_llrs[pred]))
+        # LLRs
+        llrs = self.bit_llrs
+        bp_llrs = np.array(stats["bit_llrs"])
+        bp_llrs_plus = np.clip(bp_llrs, 0.0, None)
 
-        # Prior LLR
-        bit_llrs = np.log(self.p / (1 - self.p))
-        pred_llr = float(np.sum(bit_llrs[pred]))
+        # Prediction LLR
+        soft_info["pred_llr"] = float(np.sum(llrs[pred]))
+        soft_info["pred_bp_llr"] = float(np.sum(bp_llrs[pred]))
+
+        # Detector density
+        soft_info["detector_density"] = detector_outcomes.sum() / len(detector_outcomes)
+
+        # Cluster statistics
+        individual_cluster_stats_dict: Dict[int, Dict[str, Any]] = stats[
+            "individual_cluster_stats"
+        ]
+
+        final_cluster_bit_counts = []
+        final_cluster_llrs = []
+        final_cluster_bp_llrs = []
+        final_cluster_bp_llrs_plus = []
+        total_boundary_size = 0
+        for data in individual_cluster_stats_dict.values():
+            if data.get("active", False):  # Assuming "active" key exists
+                final_cluster_bit_counts.append(int(data["final_bit_count"]))
+                final_bits = data["final_bits"]
+                final_cluster_llrs.append(llrs[final_bits].sum())
+                final_cluster_bp_llrs.append(bp_llrs[final_bits].sum())
+                final_cluster_bp_llrs_plus.append(bp_llrs_plus[final_bits].sum())
+                final_bits_vector = np.zeros(self.H.shape[1], dtype=bool)
+                final_bits_vector[final_bits] = True
+                inside_cnt = self.H[:, final_bits_vector].getnnz(axis=1)
+                outside_cnt = self.H[:, ~final_bits_vector].getnnz(axis=1)
+                assert len(inside_cnt) == self.H.shape[0]
+                total_boundary_size += np.sum((inside_cnt > 0) & (outside_cnt > 0))
+
+        soft_info["total_boundary_size"] = total_boundary_size
 
         # Cluster size sum & max cluster size
-        cluster_stats = stats["individual_cluster_stats"]
-        cluster_sizes = [
-            data["final_bit_count"]
-            for _, data in cluster_stats.items()
-            if data["active"]
-        ]
-        cluster_size_sum = sum(cluster_sizes)
-        max_cluster_size = max(cluster_sizes) if cluster_sizes else 0
+        soft_info["total_cluster_size"] = sum(final_cluster_bit_counts)
+        soft_info["max_cluster_size"] = (
+            max(final_cluster_bit_counts) if final_cluster_bit_counts else 0
+        )
+        soft_info["cluster_num"] = len(final_cluster_bit_counts)
 
-        # Cluster number
-        cluster_num = len(cluster_stats)
+        # LLR of final clusters
+        soft_info["total_cluster_llr"] = np.sum(final_cluster_llrs)
+        soft_info["total_cluster_bp_llr"] = np.sum(final_cluster_bp_llrs)
+        soft_info["total_cluster_bp_llr_plus"] = np.sum(final_cluster_bp_llrs_plus)
+        soft_info["max_cluster_llr"] = max(final_cluster_llrs)
+        soft_info["max_cluster_bp_llr"] = max(final_cluster_bp_llrs)
+        soft_info["max_cluster_bp_llr_plus"] = max(final_cluster_bp_llrs_plus)
 
-        # Cluster LLR sum & prior-LLR sum
-        cluster_bits = []
-        for _, data in cluster_stats.items():
-            if data["active"]:
-                cluster_bits.extend(data["final_bits"])
-        cluster_bp_llr_sum = float(np.sum(bit_bp_llrs[cluster_bits]))
-        cluster_llr_sum = float(np.sum(bit_llrs[cluster_bits]))
+        # LLR outside clusters
+        soft_info["outside_cluster_llr"] = np.sum(llrs) - soft_info["total_cluster_llr"]
+        soft_info["outside_cluster_bp_llr"] = (
+            np.sum(bp_llrs) - soft_info["total_cluster_bp_llr"]
+        )
+        soft_info["outside_cluster_bp_llr_plus"] = (
+            np.sum(bp_llrs_plus) - soft_info["total_cluster_bp_llr_plus"]
+        )
 
-        total_bp_llr = float(np.sum(bit_bp_llrs))
-        outside_cluster_bp_llr = total_bp_llr - cluster_bp_llr_sum
+        if norm_order is not None:
+            # {norm_order}-norm of LLRs of final clusters
+            def norm(x):
+                return np.power(np.sum(np.power(x, norm_order)), 1 / norm_order)
 
-        total_llr = float(np.sum(bit_llrs))
-        outside_cluster_llr = total_llr - cluster_llr_sum
+            soft_info["cluster_llr_norm"] = norm(final_cluster_llrs)
+            # soft_info["cluster_bp_llr_norm"] = norm(final_cluster_bp_llrs)
+            soft_info["cluster_bp_llr_plus_norm"] = norm(final_cluster_bp_llrs_plus)
 
-        soft_info = {
-            "converge": converge,
-            "cluster_size_sum": cluster_size_sum,
-            "max_cluster_size": max_cluster_size,
-            "cluster_num": cluster_num,
-            "pred_bp_llr": pred_bp_llr,
-            "cluster_bp_llr_sum": cluster_bp_llr_sum,
-            "outside_cluster_bp_llr": outside_cluster_bp_llr,
-            "pred_llr": pred_llr,
-            "cluster_llr_sum": cluster_llr_sum,
-            "outside_cluster_llr": outside_cluster_llr,
-        }
-
-        return pred, soft_info
+        return pred, pred_bp, converge, soft_info

@@ -8,4 +8,5 @@ statsmodels==0.14.4
 stim==1.14.0
 joblib==1.4.2
 jupyterthemes==0.20.0
+bposd==2.1.0
 src/ldpc_post_selection/ext/ldpc

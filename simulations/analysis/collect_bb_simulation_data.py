@@ -8,21 +8,22 @@ from typing import List, Set, Tuple
 import numba  # Import Numba
 import numpy as np
 import pandas as pd
-from numba import prange
 from statsmodels.stats.proportion import proportion_confint
 from tqdm import tqdm
 
-from src.ldpc_post_selection.build_circuit import build_BB_circuit, get_BB_distance
+from src.ldpc_post_selection.build_circuit import build_BB_circuit
 
 
-def find_bb_simulation_files(  # Rename function
+def find_bb_simulation_files(
     n: int,
     T: int,
     p: float,
-    data_dir: str = "../data/bb_circuit_iter30_minsum_lsd0",
-) -> List[str]:  # Return List[str] instead of pd.DataFrame
+    data_dir: str = "../data/bb_circuit_iter30_minsum_lsd0",  # Base directory
+    verbose: bool = False,
+) -> List[str]:
     """
-    Find BB code circuit simulation data feather files for a specific (n, T, p) tuple.
+    Find BB code circuit simulation data feather files (`data_*.feather`)
+    within the specific subdirectory for an (n, T, p) tuple.
 
     Parameters
     ----------
@@ -33,124 +34,92 @@ def find_bb_simulation_files(  # Rename function
     p : float
         Physical error rate
     data_dir : str
-        Directory path containing the simulation data files.
+        Base directory path containing the `n{n}_T{T}_p{p}` subdirectories.
+    verbose : bool, optional
+        Whether to print the number of found files. Defaults to False.
 
     Returns
     -------
     file_paths : list of str
-        List of file paths matching the specified (n, T, p)
+        List of file paths matching `data_*.feather` in the subdirectory.
 
-    Raise
+    Raises
     ------
     FileNotFoundError
-        If the data directory does not exist.
+        If the base data directory or the specific n{n}_T{T}_p{p} subdirectory does not exist.
     ValueError
-        If no data files arg found for the specified (n, T, p).
+        If no `data_*.feather` files are found within the subdirectory.
     """
-    if not os.path.exists(data_dir):
-        raise FileNotFoundError(f"Data directory not found: {data_dir}")
+    if not os.path.isdir(data_dir):
+        raise FileNotFoundError(f"Base data directory not found: {data_dir}")
 
-    file_paths = []
-    processed_filenames = set()
-
-    # --- Try pattern with T ---
+    # Construct the specific subdirectory path
     p_str = f"{p:.{len(str(p).split('.')[-1])}f}".rstrip("0").rstrip(
         "."
-    )  # Adjust precision as needed
-    pattern_with_T = f"n{n}_T{T}_p{p_str}_*.feather"
-    found_files = glob.glob(os.path.join(data_dir, pattern_with_T))
-    for f in found_files:
-        fname = os.path.basename(f)
-        if fname not in processed_filenames:
-            file_paths.append(f)
-            processed_filenames.add(fname)
+    )  # Format p for directory name
+    sub_dirname = f"n{n}_T{T}_p{p_str}"
+    sub_dir_path = os.path.join(data_dir, sub_dirname)
 
-    # --- Fallback: less precise glob with T and filter ---
-    if not file_paths:
-        fallback_pattern_with_T = f"n{n}_T{T}_p*.feather"
-        potential_files = glob.glob(os.path.join(data_dir, fallback_pattern_with_T))
-        p_pattern_regex = re.compile(rf"n{n}_T{T}_p([\d\.]+)_.*\.feather")
-        for fpath in potential_files:
-            fname = os.path.basename(fpath)
-            if fname in processed_filenames:
-                continue
-            match = p_pattern_regex.search(fname)
-            if match:
-                try:
-                    file_p = float(match.group(1))
-                    if np.isclose(file_p, p):
-                        file_paths.append(fpath)
-                        processed_filenames.add(fname)
-                except ValueError:
-                    continue
+    if not os.path.isdir(sub_dir_path):
+        raise FileNotFoundError(
+            f"Subdirectory not found for n={n}, T={T}, p={p}: {sub_dir_path}"
+        )
 
-    # --- Fallback: Try pattern without T (assuming T=get_BB_distance(n)) ---
-    if not file_paths:
-        expected_T = get_BB_distance(n)
-        if expected_T == T:  # Only proceed if the calculated T matches the input T
-            pattern_no_T = f"n{n}_p{p_str}_*.feather"
-            found_files_no_T = glob.glob(os.path.join(data_dir, pattern_no_T))
-            for f in found_files_no_T:
-                fname = os.path.basename(f)
-                if fname not in processed_filenames:
-                    file_paths.append(f)
-                    processed_filenames.add(fname)
-
-            # --- Fallback: less precise glob without T and filter ---
-            if not file_paths:
-                fallback_pattern_no_T = f"n{n}_p*.feather"
-                potential_files_no_T = glob.glob(
-                    os.path.join(data_dir, fallback_pattern_no_T)
-                )
-                p_pattern_regex_no_T = re.compile(rf"n{n}_p([\d\.]+)_.*\.feather")
-                for fpath in potential_files_no_T:
-                    fname = os.path.basename(fpath)
-                    if fname in processed_filenames:
-                        continue
-                    match = p_pattern_regex_no_T.search(fname)
-                    if match:
-                        try:
-                            file_p = float(match.group(1))
-                            if np.isclose(file_p, p):
-                                file_paths.append(fpath)
-                                processed_filenames.add(fname)
-                        except ValueError:
-                            continue
+    # Search for data_*.feather files within the subdirectory
+    file_pattern = os.path.join(sub_dir_path, "data_*.feather")
+    file_paths = glob.glob(file_pattern)
 
     if not file_paths:
-        raise ValueError(f"No data files found for n={n}, T={T}, p={p} in {data_dir}.")
+        raise ValueError(f"No data files (data_*.feather) found in {sub_dir_path}.")
 
-    print(
-        f"Found {len(file_paths)} data files for n={n}, T={T}, p={p}."
-    )  # Modify print message
+    # Sort files naturally (e.g., data_1, data_2, ..., data_10)
+    def natural_sort_key(s):
+        # Extract the number after 'data_' and before '.feather'
+        match = re.search(r"data_(\d+)\.feather", os.path.basename(s))
+        return int(match.group(1)) if match else -1
 
-    return file_paths  # Return the list of paths
+    file_paths.sort(key=natural_sort_key)
+
+    if verbose:
+        print(f"Found {len(file_paths)} data files in {sub_dirname}.")
+
+    return file_paths
 
 
 # --- Numba JIT function for histogram calculation ---
 @numba.jit(nopython=True, fastmath=True)  # Use nopython=True for best performance
 def _calculate_histograms_numba(
-    cluster_frac_np: np.ndarray,  # Expect float array
+    values_np: np.ndarray,  # Expect float array, renamed from cluster_frac_np
     fail_mask_np: np.ndarray,  # Expect boolean array
     bin_edges: np.ndarray,  # Expect float array
     total_counts_hist: np.ndarray,  # Expect int64 array
     fail_counts_hist: np.ndarray,  # Expect int64 array
-) -> Tuple[np.ndarray, np.ndarray]:
+    converge_mask_np: np.ndarray,  # Expect boolean array
+    converge_counts_hist: np.ndarray,  # Expect int64 array
+    fail_converge_counts_hist: np.ndarray,  # Expect int64 array
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Calculate total and fail histograms using Numba with an optimized single loop.
+    Calculate total, fail, converge, and fail_converge histograms using Numba with an optimized single loop.
 
     Parameters
     ----------
-    cluster_frac_np : 1D numpy array of float
-        Valid cluster fractions (NaNs should be removed before calling).
+    values_np : 1D numpy array of float
+        Values to be histogrammed (e.g., cluster fractions or other column data).
+        NaNs should be removed before calling. Renamed from cluster_frac_np.
     fail_mask_np : 1D numpy array of bool
-        Indicates failures, aligned with cluster_frac_np.
+        Indicates failures, aligned with values_np.
     bin_edges : 1D numpy array of float
         Defines the histogram bin edges, must be sorted.
     total_counts_hist : 1D numpy array of int64
         Histogram counts for all samples (updated in-place).
     fail_counts_hist : 1D numpy array of int64
         Histogram counts for failed samples (updated in-place).
+    converge_mask_np : 1D numpy array of bool
+        Indicates convergence, aligned with values_np.
+    converge_counts_hist : 1D numpy array of int64
+        Histogram counts for converged samples (updated in-place).
+    fail_converge_counts_hist : 1D numpy array of int64
+        Histogram counts for samples where both fail and converge are true (updated in-place).
 
     Returns
     -------
@@ -158,22 +127,31 @@ def _calculate_histograms_numba(
         The updated histogram counts for all samples.
     fail_counts_hist : 1D numpy array of int64
         The updated histogram counts for failed samples.
+    converge_counts_hist : 1D numpy array of int64
+        The updated histogram counts for converged samples.
+    fail_converge_counts_hist : 1D numpy array of int64
+        The updated histogram counts for fail_converged samples.
 
     Notes
     -----
     This implementation manually calculates the histogram bins in a single pass
     for potentially better performance within Numba compared to calling
     np.histogram multiple times. It assumes NaNs have been filtered from
-    cluster_frac_np before calling. It replicates np.histogram's behavior
+    values_np before calling. It replicates np.histogram's behavior
     regarding bin edges: bins are [left, right), except the last bin which
     is [left, right].
     """
     n_bins = len(bin_edges) - 1
     if n_bins <= 0:  # Handle empty or invalid bin_edges
-        return total_counts_hist, fail_counts_hist
+        return (
+            total_counts_hist,
+            fail_counts_hist,
+            converge_counts_hist,
+            fail_converge_counts_hist,
+        )
 
-    for i in range(len(cluster_frac_np)):
-        val = cluster_frac_np[i]
+    for i in range(len(values_np)):
+        val = values_np[i]
 
         # Check if value is within the histogram range
         # Note: np.histogram includes the right edge only for the last bin.
@@ -206,21 +184,37 @@ def _calculate_histograms_numba(
             total_counts_hist[bin_idx] += 1
             if fail_mask_np[i]:
                 fail_counts_hist[bin_idx] += 1
+            if converge_mask_np[i]:
+                converge_counts_hist[bin_idx] += 1
+            if (
+                fail_mask_np[i] and converge_mask_np[i]
+            ):  # Check for both fail and converge
+                fail_converge_counts_hist[bin_idx] += 1
 
-    return total_counts_hist, fail_counts_hist
+    return (
+        total_counts_hist,
+        fail_counts_hist,
+        converge_counts_hist,
+        fail_converge_counts_hist,
+    )
 
 
-def calculate_df_ps_for_combination(
+def calculate_df_agg_for_combination(
     n: int,
     T: int,
     p: float,
     data_dir: str = "../data/bb_circuit_iter30_minsum_lsd0",
-    cluster_frac_precision: int = 3,
+    num_hist_bins: int = 1000,
+    min_value_override: float | None = None,  # Renamed from min_cluster_frac_override
+    max_value_override: float | None = None,  # Renamed from max_cluster_frac_override
+    ascending_confidence: bool = True,
+    by: str = "cluster_frac",  # Renamed from aggregation_column_name, default changed
+    verbose: bool = False,
 ) -> Tuple[pd.DataFrame, int]:
     """
-    Calculate the post-selection DataFrame (df_ps) for a single (n, T, p) combination.
+    Calculate the post-selection DataFrame (df_agg) for a single (n, T, p) combination.
     Uses Numba JIT for histogram calculation.
-    Includes timing for benchmarking loop operations.
+    The range for the aggregation value histogram can be auto-detected or user-specified.
 
     Parameters
     ----------
@@ -232,63 +226,229 @@ def calculate_df_ps_for_combination(
         Physical error rate.
     data_dir : str
         Directory path containing the simulation data files.
-    cluster_frac_precision : int, optional
-        Number of decimal places to consider for the cluster fraction histogram bins.
-        Defaults to 3.
+    num_hist_bins : int, optional
+        Number of bins to use for the histogram. Defaults to 1000.
+    min_value_override : float, optional
+        User-specified minimum value for the histogram range.
+        If None, it's auto-detected.
+    max_value_override : float, optional
+        User-specified maximum value for the histogram range.
+        If None, it's auto-detected.
+    ascending_confidence : bool, optional
+        Indicates the relationship between the aggregated value and decoding confidence.
+        If True (default), a higher value implies higher confidence. The reported
+        value in `df_agg` for a bin will be its lower edge.
+        If False, a higher value implies lower confidence. The reported
+        value in `df_agg` for a bin will be its upper edge.
+    by : str, optional
+        Column to aggregate by. Defaults to "cluster_frac".
+        If "cluster_frac", values from "cluster_size_sum" are read and
+        normalized by `num_errors`.
+        If "cluster_frac_bp_llr", the ratio cluster_bp_llr_sum / (cluster_bp_llr_sum + outside_cluster_bp_llr) is used.
+        If "cluster_frac_llr", the ratio cluster_llr_sum / (cluster_llr_sum + outside_cluster_llr) is used.
+        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - cluster_bp_llr_sum is used.
+        If "cluster_gap_llr", the difference outside_cluster_llr - cluster_llr_sum is used.
+        Otherwise, `by` is treated as the direct column name to read and use raw values from.
+    verbose : bool, optional
+        Whether to print progress and benchmarking information. Defaults to False.
 
     Returns
     -------
-    df_ps : pd.DataFrame
+    df_agg : pd.DataFrame
         DataFrame with columns ['c', 'num_accs', 'num_fails']. Empty if fails.
     total_rows_processed : int
         Total number of simulation rows processed.
     """
     try:
-        file_paths = find_bb_simulation_files(n=n, T=T, p=p, data_dir=data_dir)
+        file_paths = find_bb_simulation_files(
+            n=n, T=T, p=p, data_dir=data_dir, verbose=verbose
+        )
         if not file_paths:
             print(f"Warning: No files found for n={n}, T={T}, p={p}. Skipping.")
             return pd.DataFrame(), 0
 
-        # --- Get num_errors once ---
-        try:
-            circuit = build_BB_circuit(n=n, T=T, p=p)
-            detector_error_model = circuit.detector_error_model()
-            if detector_error_model is None:
-                raise ValueError("Could not get detector_error_model.")
-            num_errors = detector_error_model.num_errors
-            if num_errors is None or num_errors <= 0:
-                raise ValueError(f"Invalid num_errors ({num_errors}).")
-        except Exception as e:
-            print(
-                f"Warning: Error getting num_errors for n={n}, T={T}, p={p}: {e}. Skipping."
-            )
-            return pd.DataFrame(), 0
+        # --- Get num_errors if needed ---
+        num_errors: int | None = None
+        perform_normalization_with_num_errors = by == "cluster_frac"
+
+        actual_columns_to_read: list[str]
+        if by == "cluster_frac":
+            actual_columns_to_read = ["cluster_size_sum"]
+        elif by == "cluster_frac_bp_llr":
+            actual_columns_to_read = ["cluster_bp_llr_sum", "outside_cluster_bp_llr"]
+        elif by == "cluster_frac_llr":
+            actual_columns_to_read = ["cluster_llr_sum", "outside_cluster_llr"]
+        elif by == "cluster_gap_bp_llr":
+            actual_columns_to_read = ["outside_cluster_bp_llr", "cluster_bp_llr_sum"]
+        elif by == "cluster_gap_llr":
+            actual_columns_to_read = ["outside_cluster_llr", "cluster_llr_sum"]
+        else:
+            actual_columns_to_read = [by]  # Direct column name
+
+        if perform_normalization_with_num_errors:
+            try:
+                circuit = build_BB_circuit(n=n, T=T, p=p)
+                detector_error_model = circuit.detector_error_model()
+                if detector_error_model is None:
+                    raise ValueError("Could not get detector_error_model.")
+                num_errors = detector_error_model.num_errors
+                if (
+                    num_errors is None or num_errors < 0
+                ):  # Allow num_errors == 0 for empty cluster_frac later
+                    raise ValueError(f"Invalid num_errors ({num_errors}).")
+            except Exception as e:
+                print(
+                    f"Warning: Error getting num_errors for n={n}, T={T}, p={p} (needed for normalization): {e}. Skipping."
+                )
+                return pd.DataFrame(), 0
+        # --------------------------------
+
+        # --- Determine value range (min_val, max_val) ---
+        actual_min_val: float
+        actual_max_val: float
+
+        if min_value_override is not None and max_value_override is not None:
+            if min_value_override >= max_value_override:
+                raise ValueError(
+                    "min_value_override must be less than max_value_override."
+                )
+            actual_min_val = min_value_override
+            actual_max_val = max_value_override
+            if verbose:
+                print(
+                    f"  Using user-specified value range for {by}: [{actual_min_val}, {actual_max_val}]"
+                )
+        else:
+            # Auto-detect range: First pass over files
+            if verbose:
+                print(f"  Auto-detecting value range for {by} (first pass)...")
+            current_min_val = np.inf
+            current_max_val = -np.inf
+            found_any_valid_value = False
+            # Use actual_columns_to_read for the range detection pass
+            range_detection_cols = actual_columns_to_read
+
+            for file_path_pass1 in tqdm(file_paths, desc="Range detection"):
+                try:
+                    df_temp = pd.read_feather(
+                        file_path_pass1, columns=range_detection_cols
+                    )
+                    # Ensure all required columns for the current 'by' mode are present
+                    if not df_temp.empty and all(
+                        col in df_temp.columns for col in actual_columns_to_read
+                    ):
+                        if by == "cluster_frac":
+                            if (
+                                num_errors == 0
+                            ):  # Should be caught if num_errors is critical
+                                temp_series_to_bin = pd.Series(dtype=float)
+                            else:
+                                temp_series_to_bin = (
+                                    df_temp[actual_columns_to_read[0]] / num_errors
+                                )
+                        elif by == "cluster_frac_bp_llr":
+                            numerator = df_temp["cluster_bp_llr_sum"]
+                            denominator = (
+                                df_temp["cluster_bp_llr_sum"]
+                                + df_temp["outside_cluster_bp_llr"]
+                            )
+                            temp_series_to_bin = numerator / denominator.replace(
+                                0, np.nan
+                            )  # Avoid division by zero
+                        elif by == "cluster_frac_llr":
+                            numerator = df_temp["cluster_llr_sum"]
+                            denominator = (
+                                df_temp["cluster_llr_sum"]
+                                + df_temp["outside_cluster_llr"]
+                            )
+                            temp_series_to_bin = numerator / denominator.replace(
+                                0, np.nan
+                            )  # Avoid division by zero
+                        elif by == "cluster_gap_bp_llr":
+                            temp_series_to_bin = (
+                                df_temp["outside_cluster_bp_llr"]
+                                - df_temp["cluster_bp_llr_sum"]
+                            )
+                        elif by == "cluster_gap_llr":
+                            temp_series_to_bin = (
+                                df_temp["outside_cluster_llr"]
+                                - df_temp["cluster_llr_sum"]
+                            )
+                        else:  # Direct column name
+                            temp_series_to_bin = df_temp[actual_columns_to_read[0]]
+
+                        temp_series_to_bin = temp_series_to_bin.dropna()
+                        if not temp_series_to_bin.empty:
+                            found_any_valid_value = True
+                            current_min_val = min(
+                                current_min_val, temp_series_to_bin.min()
+                            )
+                            current_max_val = max(
+                                current_max_val, temp_series_to_bin.max()
+                            )
+                    del df_temp
+                except Exception as e_pass1:
+                    print(
+                        f"Warning: Error during range detection for file {file_path_pass1}: {e_pass1}"
+                    )
+
+            if not found_any_valid_value:
+                print(
+                    f"Warning: No valid data found for {by} for n={n}, T={T}, p={p} during range detection. Skipping."
+                )
+                return pd.DataFrame(), 0
+
+            actual_min_val = current_min_val
+            actual_max_val = current_max_val
+
+            if np.isclose(actual_min_val, actual_max_val):
+                if verbose:
+                    print(
+                        f"  Detected min_value ({actual_min_val}) approx equals max_value ({actual_max_val})."
+                    )
+                if actual_max_val < actual_min_val:
+                    actual_max_val = actual_min_val
+            if verbose:
+                print(
+                    f"  Auto-detected value range for {by}: [{actual_min_val}, {actual_max_val}]"
+                )
 
         # --- Initialize Histogram approach ---
-        if not isinstance(cluster_frac_precision, int) or cluster_frac_precision < 1:
-            raise ValueError("cluster_frac_precision must be a positive integer.")
-        num_bins = 10**cluster_frac_precision + 1
-        # Revert bin_edges to default dtype (float64, Numba handles various float types)
-        bin_edges = np.linspace(0, 1, num_bins)
-        total_counts_hist = np.zeros(num_bins - 1, dtype=np.int64)
-        fail_counts_hist = np.zeros(num_bins - 1, dtype=np.int64)
+        if not isinstance(num_hist_bins, int) or num_hist_bins < 1:
+            raise ValueError("num_hist_bins must be a positive integer.")
+
+        if actual_max_val < actual_min_val:
+            print(
+                f"Warning: max_value ({actual_max_val}) < min_value ({actual_min_val}). Setting max_value = min_value."
+            )
+            actual_max_val = actual_min_val
+
+        bin_edges = np.linspace(actual_min_val, actual_max_val, num_hist_bins + 1)
+        total_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+        fail_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+        converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+        fail_converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
         total_rows_processed = 0
 
         # --- Pre-compile Numba function with dummy data ---
-        print("Pre-compiling Numba histogram function...")
+        if verbose:
+            print("Pre-compiling Numba histogram function...")
         try:
-            # Create dummy arrays with expected dtypes
-            dummy_cluster_frac = np.array([0.5], dtype=np.float64)
+            dummy_values = np.array([0.5], dtype=np.float64)
             dummy_fail_mask = np.array([True], dtype=bool)
-            # Use the actual bin_edges array as its type is known
+            dummy_converge_mask = np.array([True], dtype=bool)
             _calculate_histograms_numba(
-                dummy_cluster_frac,
+                dummy_values,
                 dummy_fail_mask,
                 bin_edges,
-                total_counts_hist,
-                fail_counts_hist,
+                total_counts_hist.copy(),
+                fail_counts_hist.copy(),
+                dummy_converge_mask,
+                converge_counts_hist.copy(),
+                fail_converge_counts_hist.copy(),
             )
-            print("Numba function pre-compiled.")
+            if verbose:
+                print("Numba function pre-compiled.")
         except Exception as e:
             print(
                 f"Warning: Numba pre-compilation failed: {e}. Proceeding without pre-compilation."
@@ -297,129 +457,188 @@ def calculate_df_ps_for_combination(
 
         # --- Benchmarking variables ---
         total_read_time = 0.0
-        total_calc_frac_time = 0.0
+        total_calc_value_time = 0.0  # Renamed from total_calc_frac_time
         total_hist_time = 0.0
         # ----------------------------
 
         # --- Process files iteratively (Optimized Read, Numba Histograms) ---
-        print(f"Processing {len(file_paths)} files iteratively (Numba histograms)...")
-        required_columns = ["cluster_size_sum", "fail"]
+        if verbose:
+            print(
+                f"Processing {len(file_paths)} files iteratively (Numba histograms)..."
+            )
+        # Dynamically determine required columns for main processing pass
+        # Start with columns needed for the 'by' logic, then add common ones.
+        required_columns_for_read = list(actual_columns_to_read)  # Copy the list
+        required_columns_for_read.extend(["fail", "converge"])
+        required_columns_for_read = sorted(list(set(required_columns_for_read)))
 
         for i, file_path in tqdm(list(enumerate(file_paths))):
             try:
-                # --- Time File Reading ---
                 start_time = time.perf_counter()
-                # Read only the required columns
-                df_single = pd.read_feather(file_path, columns=required_columns)
+                df_single = pd.read_feather(
+                    file_path, columns=required_columns_for_read
+                )
                 read_time = time.perf_counter() - start_time
                 total_read_time += read_time
-                # -------------------------
 
                 if df_single.empty:
-                    # No processing needed for empty files, skip timing other parts
-                    # print(f"  Skipping empty file (or file without required columns): {os.path.basename(file_path)}") # Optional: Keep logging if needed
                     continue
 
-                # Check if required columns were actually loaded (in case file didn't have them)
-                if not all(col in df_single.columns for col in required_columns):
-                    # print(f"  Skipping file missing required columns ({required_columns}): {os.path.basename(file_path)}") # Optional: Keep logging if needed
+                if not all(
+                    col in df_single.columns for col in required_columns_for_read
+                ):
                     continue
 
                 current_rows = len(df_single)
                 total_rows_processed += current_rows
 
-                # --- Time Cluster Fraction Calculation ---
                 start_time = time.perf_counter()
-                if num_errors == 0:
-                    # Keep original dtype for cluster_frac
-                    cluster_frac = pd.Series(dtype=float)  # Use default float
-                else:
-                    # Calculate using original types
-                    cluster_frac = df_single["cluster_size_sum"] / num_errors
+                if by == "cluster_frac":
+                    if num_errors == 0:  # num_errors is guaranteed to be non-None here
+                        series_to_bin = pd.Series(dtype=float)
+                    else:
+                        series_to_bin = (
+                            df_single[actual_columns_to_read[0]] / num_errors
+                        )
+                elif by == "cluster_frac_bp_llr":
+                    numerator = df_single["cluster_bp_llr_sum"]
+                    denominator = (
+                        df_single["cluster_bp_llr_sum"]
+                        + df_single["outside_cluster_bp_llr"]
+                    )
+                    series_to_bin = numerator / denominator.replace(
+                        0, np.nan
+                    )  # Avoid division by zero
+                elif by == "cluster_frac_llr":
+                    numerator = df_single["cluster_llr_sum"]
+                    denominator = (
+                        df_single["cluster_llr_sum"] + df_single["outside_cluster_llr"]
+                    )
+                    series_to_bin = numerator / denominator.replace(
+                        0, np.nan
+                    )  # Avoid division by zero
+                elif by == "cluster_gap_bp_llr":
+                    series_to_bin = (
+                        df_single["outside_cluster_bp_llr"]
+                        - df_single["cluster_bp_llr_sum"]
+                    )
+                elif by == "cluster_gap_llr":
+                    series_to_bin = (
+                        df_single["outside_cluster_llr"] - df_single["cluster_llr_sum"]
+                    )
+                else:  # Direct column name
+                    series_to_bin = df_single[actual_columns_to_read[0]]
 
-                # Keep original dropna method
-                cluster_frac = cluster_frac.dropna()
+                series_to_bin_cleaned = series_to_bin.dropna()
 
-                calc_frac_time = time.perf_counter() - start_time
-                total_calc_frac_time += calc_frac_time
-                # ---------------------------------------
+                calc_value_time = time.perf_counter() - start_time  # Renamed
+                total_calc_value_time += calc_value_time  # Renamed
 
-                # --- Time Histogram Calculation (Using Numba JIT function) ---
+                if (
+                    min_value_override is not None
+                    and max_value_override is not None
+                    and not series_to_bin_cleaned.empty
+                ):
+                    values_np_check = series_to_bin_cleaned.to_numpy()
+                    if np.any(values_np_check < min_value_override) or np.any(
+                        values_np_check > max_value_override
+                    ):
+                        raise ValueError(
+                            f"Data found outside user-specified value range "
+                            f"[{min_value_override}, {max_value_override}]. "
+                            f"Aggregation method: {by}, File: {os.path.basename(file_path)}"
+                        )
+
                 start_time = time.perf_counter()
-                if not cluster_frac.empty:
-                    # Prepare data for Numba: Convert to NumPy and ensure no NaNs
-                    # cluster_frac already has NaNs dropped
-                    cluster_frac_np = cluster_frac.to_numpy()
+                if not series_to_bin_cleaned.empty:
+                    values_np = series_to_bin_cleaned.to_numpy()
+                    fail_mask = (
+                        df_single["fail"]
+                        .reindex(series_to_bin_cleaned.index)
+                        .to_numpy()
+                    )
+                    converge_mask = (
+                        df_single["converge"]
+                        .reindex(series_to_bin_cleaned.index)
+                        .to_numpy()
+                    )
 
-                    # Get fail mask corresponding to the non-NaN cluster_frac indices
-                    fail_mask = df_single["fail"].reindex(cluster_frac.index).to_numpy()
-
-                    # Call Numba function
-                    total_counts_hist, fail_counts_hist = _calculate_histograms_numba(
-                        cluster_frac_np,
+                    (
+                        total_counts_hist,
+                        fail_counts_hist,
+                        converge_counts_hist,
+                        fail_converge_counts_hist,
+                    ) = _calculate_histograms_numba(
+                        values_np,
                         fail_mask,
                         bin_edges,
                         total_counts_hist,
                         fail_counts_hist,
+                        converge_mask,
+                        converge_counts_hist,
+                        fail_converge_counts_hist,
                     )
 
                 hist_time = time.perf_counter() - start_time
                 total_hist_time += hist_time
-                # -----------------------------------------------------------
 
-                # --- Memory Management ---
-                del df_single, cluster_frac  # Keep simple del
-                # Delete numpy arrays if they were created
-                if "cluster_frac_np" in locals():
-                    del cluster_frac_np
+                del df_single, series_to_bin
+                if "series_to_bin_cleaned" in locals():
+                    del series_to_bin_cleaned
+                if "values_np" in locals():
+                    del values_np
                 if "fail_mask" in locals():
-                    del fail_mask  # fail_mask is now numpy array
-                # Optional: Collect garbage periodically if needed
-                # if (i + 1) % 50 == 0: # Adjust frequency as needed
-                #     gc.collect()
-                #     # print(f"  Processed {i+1}/{len(file_paths)} files.") # Optional: Keep logging if needed
+                    del fail_mask
+                if "converge_mask" in locals():
+                    del converge_mask
 
             except Exception as e:
                 print(f"Warning: Error processing file {file_path}: {e}")
-                # Decide whether to continue or abort for the combination
-                # continue # Continue with next file
 
-        gc.collect()  # Final garbage collection for this combination
+        gc.collect()
 
-        # --- Print Benchmarking Results ---
         # print("--- Benchmarking Results ---")
         # print(f"Total time reading files: {total_read_time:.4f} seconds")
-        # print(f"Total time calculating fractions: {total_calc_frac_time:.4f} seconds")
+        # print(f"Total time calculating values: {total_calc_value_time:.4f} seconds") # Renamed
         # print(f"Total time calculating histograms: {total_hist_time:.4f} seconds")
         # print("----------------------------")
-        # ----------------------------------
 
         if total_rows_processed == 0:
-            print(f"Warning: Processed 0 valid rows for n={n}, T={T}, p={p}. Skipping.")
+            print(
+                f"Warning: Processed 0 valid rows for n={n}, T={T}, p={p} using aggregation method {by}. Skipping."
+            )
             return pd.DataFrame(), 0
 
-        # --- Calculate cumulative counts and thresholds ---
-        cum_acc_counts = np.cumsum(total_counts_hist)
-        cum_fail_counts = np.cumsum(fail_counts_hist)
-        # Use default bin_edges for thresholds
-        thr = bin_edges[1:]
+        # --- Construct df_agg with raw bin counts ---
+        binned_value_column_name = (
+            by  # The output column is named after the 'by' method
+        )
 
-        # --- Construct df_ps ---
-        df_ps = pd.DataFrame(
+        if ascending_confidence:
+            binned_values_for_df = bin_edges[:-1]
+        else:
+            binned_values_for_df = bin_edges[1:]
+
+        df_agg = pd.DataFrame(
             {
-                "c": 1 - thr,
-                "num_accs": cum_acc_counts,
-                "num_fails": cum_fail_counts,
+                binned_value_column_name: binned_values_for_df,
+                "count": total_counts_hist,
+                "num_fails": fail_counts_hist,
+                "num_converged": converge_counts_hist,
+                "num_converged_fails": fail_converge_counts_hist,
             }
         )
 
-        df_ps = df_ps[df_ps["num_accs"] > 0]
-        df_ps = df_ps.sort_values("c", ascending=False).reset_index(drop=True)
+        df_agg = df_agg[df_agg["count"] > 0]
+        df_agg = df_agg.sort_values(
+            binned_value_column_name, ascending=True
+        ).reset_index(drop=True)
 
-        print(
-            f"  → Generated df_ps with {len(df_ps)} rows from {total_rows_processed} total samples."
-        )
-        return df_ps, total_rows_processed
+        if verbose:
+            print(
+                f"  -> Generated df_agg with {len(df_agg)} rows from {total_rows_processed} total samples, using aggregation method '{by}'."
+            )
+        return df_agg, total_rows_processed
 
     except (FileNotFoundError, ValueError) as e:
         print(
@@ -431,153 +650,59 @@ def calculate_df_ps_for_combination(
         return pd.DataFrame(), 0
 
 
-def _calculate_p_confint(
-    num_trials: int | pd.Series | np.ndarray,  # Allow ndarray
-    num_successes: int | pd.Series | np.ndarray,  # Allow ndarray
-    alpha: float = 0.05,  # Corresponds to 95% confidence interval
-) -> Tuple[
-    float | pd.Series | np.ndarray, float | pd.Series | np.ndarray
-]:  # Update return possibilities
-    """
-    Calculate proportion and confidence interval half-width using Wilson score interval.
-
-    Parameters
-    ----------
-    num_trials : int or pd.Series or np.ndarray
-        Number of trials.
-    num_successes : int or pd.Series or np.ndarray
-        Number of successes.
-    alpha : float, optional
-        Significance level (default is 0.05 for 95% confidence).
-
-    Returns
-    -------
-    p : float or pd.Series or np.ndarray
-        Estimated proportion of successes.
-    delta_p : float or pd.Series or np.ndarray
-        Half-width of the confidence interval.
-    """
-    # Ensure inputs are numpy arrays for vectorized operations
-    k = np.asarray(num_successes)
-    n = np.asarray(num_trials)
-
-    # Determine the broadcast shape
-    try:
-        broadcast_shape = np.broadcast(n, k).shape
-    except ValueError:
-        # Handle cases where shapes are incompatible for broadcasting
-        raise ValueError(
-            f"Input shapes {n.shape} and {k.shape} are not compatible for broadcasting."
-        )
-
-    # Initialize output arrays with NaNs, matching the broadcast shape
-    p_low = np.full(broadcast_shape, np.nan, dtype=float)
-    p_upp = np.full(broadcast_shape, np.nan, dtype=float)
-
-    # Create broadcasted versions for mask calculation (read-only views)
-    # Use np.broadcast_to for explicit broadcasting if needed, or rely on implicit broadcasting
-    try:
-        n_broadcasted, k_broadcasted = np.broadcast_arrays(n, k)
-    except ValueError:
-        # This should ideally not happen if broadcast_shape was calculated successfully
-        raise ValueError(f"Could not broadcast input shapes {n.shape} and {k.shape}")
-
-    # Handle cases where k > n or n = 0 using broadcasted arrays
-    # Ensure k>=0 check is included
-    valid_mask = (
-        (n_broadcasted > 0) & (k_broadcasted >= 0) & (k_broadcasted <= n_broadcasted)
-    )
-
-    # Perform calculation only where the mask is True
-    if np.any(valid_mask):
-        # Extract valid counts based on the mask applied to the broadcasted k
-        k_valid = k_broadcasted[valid_mask]
-
-        # Determine the correct value/array for 'nobs' argument in proportion_confint
-        if n.ndim == 0:
-            # If original n was scalar, use its scalar value.
-            # proportion_confint handles broadcasting nobs scalar to count array.
-            n_val_for_confint = n.item()
-        else:
-            # If original n was an array, use the broadcasted and masked version.
-            n_val_for_confint = n_broadcasted[valid_mask]
-
-        # Calculate confidence intervals for the valid subset
-        p_low_valid, p_upp_valid = proportion_confint(
-            k_valid, n_val_for_confint, method="wilson", alpha=alpha
-        )
-
-        # Place the results back into the full-sized arrays using the mask
-        p_low[valid_mask] = p_low_valid
-        p_upp[valid_mask] = p_upp_valid
-
-    # Calculate midpoint p and half-width delta_p
-    with np.errstate(
-        invalid="ignore"
-    ):  # Ignore warnings from NaN comparisons/arithmetic
-        p = (p_upp + p_low) / 2
-        delta_p = p_upp - p
-
-    # --- Return type handling (similar to original) ---
-    # If original inputs were Series, convert back, preserving index
-    if isinstance(num_trials, pd.Series):
-        return pd.Series(p, index=num_trials.index, name="p"), pd.Series(
-            delta_p, index=num_trials.index, name="delta_p"
-        )
-    elif isinstance(num_successes, pd.Series):
-        return pd.Series(p, index=num_successes.index, name="p"), pd.Series(
-            delta_p, index=num_successes.index, name="delta_p"
-        )
-    else:  # Inputs were scalars or numpy arrays
-        if p.ndim == 0:  # Return scalars if the result shape is scalar
-            return (
-                p.item() if p.size == 1 else p,
-                delta_p.item() if delta_p.size == 1 else delta_p,
-            )
-        else:  # Otherwise return numpy arrays
-            return p, delta_p
-
-
-def calculate_all_df_ps(
+def aggregate_data(
     data_dir: str = "../data/bb_circuit_iter30_minsum_lsd0",
+    by: str = "cluster_frac",
     n: int | None = None,
     T: int | None = None,
     p: float | None = None,
-    cluster_frac_precision: int = 3,
+    num_hist_bins: int = 1000,
+    value_range: tuple[float, float] | None = None,
+    ascending_confidence: bool = True,
+    verbose: bool = False,
 ) -> pd.DataFrame:
     """
-    Calculate and combine df_ps for specified or all (n, T, p) pairs found.
-
-    If n, T, and p are provided, calculates df_ps only for that specific combination.
-    Otherwise, scans the directory for simulation files, identifies all unique
-    (n, T, p) combinations, calculates df_ps for each, computes post-selection
-    probabilities (p_abort, p_fail) with confidence intervals, and concatenates
-    them into a single DataFrame with a multi-index (n, T, p, c).
+    Aggregate BB simulation data based on a specified column or cluster fraction.
 
     Parameters
     ----------
     data_dir : str
-        Directory path containing the simulation data files.
+        Base directory path containing the `n{n}_T{T}_p{p}` subdirectories.
+    by : str, optional
+        Column to aggregate by. Defaults to "cluster_frac".
+        If "cluster_frac", values from "cluster_size_sum" are read and
+        normalized by `num_errors` by the underlying aggregation function.
+        If "cluster_frac_bp_llr", the ratio cluster_bp_llr_sum / (cluster_bp_llr_sum + outside_cluster_bp_llr) is used.
+        If "cluster_frac_llr", the ratio cluster_llr_sum / (cluster_llr_sum + outside_cluster_llr) is used.
+        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - cluster_bp_llr_sum is used.
+        If "cluster_gap_llr", the difference outside_cluster_llr - cluster_llr_sum is used.
+        Otherwise, `by` is treated as the direct column name to read and use raw values from.
     n : int, optional
         Specific number of qubits for the BB code. If None, scan for all n.
     T : int, optional
         Specific number of rounds. If None, scan for all T.
     p : float, optional
         Specific physical error rate. If None, scan for all p.
-    cluster_frac_precision : int, optional
-        Number of decimal places to consider for the cluster fraction histogram bins.
-        Higher values increase precision but also memory usage for histograms.
-        Defaults to 3 (bins of size 0.001).
+    num_hist_bins : int, optional
+        Number of bins to use for the histogram. Defaults to 1000.
+    value_range : tuple[float, float], optional
+        User-specified minimum and maximum values for the histogram range.
+        If None, it's auto-detected.
+    ascending_confidence : bool, optional
+        Indicates the relationship between the aggregated value and decoding confidence.
+        Defaults to True.
+    verbose : bool, optional
+        Whether to print progress and informational messages. Defaults to False.
 
     Returns
     -------
-    all_df_ps : pd.DataFrame
-        Combined DataFrame with multi-index (n, T, p, c) containing
+    all_df_agg : pd.DataFrame
+        Combined DataFrame with multi-index (n, T, p, <binned_value_column>) containing
         post-selection statistics and probabilities. Returns an empty DataFrame
         if no valid data is found or processed for the specified or scanned combinations.
     """
-    if not os.path.exists(data_dir):
-        print(f"Error: Data directory not found: {data_dir}")
+    if not os.path.isdir(data_dir):
+        print(f"Error: Base data directory not found: {data_dir}")
         return pd.DataFrame()
 
     target_combinations: List[Tuple[int, int, float]] = []
@@ -585,164 +710,230 @@ def calculate_all_df_ps(
     # --- Determine target combinations ---
     if n is not None and T is not None and p is not None:
         # Specific combination provided
-        print(f"Processing specified combination: n={n}, T={T}, p={p}")
+        if verbose:
+            print(f"Checking for specified combination: n={n}, T={T}, p={p}")
         try:
-            # Check if files exist for this specific combination early
-            find_bb_simulation_files(n=n, T=T, p=p, data_dir=data_dir)
+            # Check if files exist within the subdirectory for this specific combination
+            find_bb_simulation_files(n=n, T=T, p=p, data_dir=data_dir, verbose=verbose)
             target_combinations = [(n, T, p)]
+            if verbose:
+                print(f"  -> Subdirectory and data files found.")
         except (FileNotFoundError, ValueError) as e:
             print(
                 f"Info: Cannot proceed with specified combination n={n}, T={T}, p={p}: {e}"
             )
             return pd.DataFrame()
     else:
-        # Scan directory for all combinations
-        print(f"Scanning {data_dir} for all available (n, T, p) combinations...")
-        all_files = glob.glob(os.path.join(data_dir, "*.feather"))
-        if not all_files:
-            print(f"Error: No .feather files found in {data_dir}")
+        # Scan directory for all relevant subdirectories
+        if verbose:
+            print(f"Scanning {data_dir} for `n*_T*_p*` subdirectories...")
+        # Pattern to find potential subdirectories
+        subdir_pattern = os.path.join(data_dir, "n*_T*_p*")
+        potential_subdirs = glob.glob(subdir_pattern)
+
+        if not potential_subdirs:
+            print(f"Error: No subdirectories matching 'n*_T*_p*' found in {data_dir}")
             return pd.DataFrame()
 
-        param_pattern = re.compile(r"n(\d+)(?:_T(\d+))?_p([\d\.]+)_.*\.feather")
+        # Regex to parse n, T, p from directory names
+        param_pattern = re.compile(r"n(\d+)_T(\d+)_p([\d\.]+)")
         unique_combinations: Set[Tuple[int, int, float]] = set()
 
-        for fpath in all_files:
-            match = param_pattern.search(os.path.basename(fpath))
-            if match:
-                try:
-                    scan_n = int(match.group(1))
-                    scan_p = float(match.group(3))
-                    T_str = match.group(2)
-                    if T_str:
-                        scan_T = int(T_str)
-                    else:
-                        try:
-                            scan_T = get_BB_distance(scan_n)
-                        except Exception as e:
-                            print(
-                                f"Warning: Could not determine T for n={scan_n} from filename {os.path.basename(fpath)} and get_BB_distance failed: {e}. Skipping this file."
-                            )
-                            continue
-                    # Filter based on any provided parameters
-                    if (
-                        (n is None or scan_n == n)
-                        and (T is None or scan_T == T)
-                        and (p is None or np.isclose(scan_p, p))
-                    ):
-                        unique_combinations.add((scan_n, scan_T, scan_p))
-                except (ValueError, TypeError) as e:
-                    print(
-                        f"Warning: Could not parse parameters from {os.path.basename(fpath)}: {e}. Skipping this file."
-                    )
-                except Exception as e:
-                    print(
-                        f"Warning: Unexpected error processing filename {os.path.basename(fpath)}: {e}. Skipping this file."
-                    )
+        for path in potential_subdirs:
+            if os.path.isdir(path):
+                dirname = os.path.basename(path)
+                match = param_pattern.match(dirname)  # Use match for start of string
+                if match:
+                    try:
+                        scan_n = int(match.group(1))
+                        scan_T = int(match.group(2))
+                        scan_p = float(match.group(3))
+
+                        # Filter based on any provided parameters (n, T, p)
+                        if (
+                            (n is None or scan_n == n)
+                            and (T is None or scan_T == T)
+                            and (p is None or np.isclose(scan_p, p))
+                        ):
+                            # Check if the directory actually contains data files
+                            try:
+                                find_bb_simulation_files(
+                                    n=scan_n,
+                                    T=scan_T,
+                                    p=scan_p,
+                                    data_dir=data_dir,
+                                    verbose=False,
+                                )
+                                unique_combinations.add((scan_n, scan_T, scan_p))
+                            except (FileNotFoundError, ValueError):
+                                if verbose:
+                                    print(
+                                        f"  Skipping directory {dirname}: Does not contain valid data files or is empty."
+                                    )
+                                continue  # Skip if no files inside
+                    except (ValueError, TypeError) as e:
+                        print(
+                            f"Warning: Could not parse parameters from directory name {dirname}: {e}. Skipping this directory."
+                        )
+                    except Exception as e:
+                        print(
+                            f"Warning: Unexpected error processing directory {dirname}: {e}. Skipping this directory."
+                        )
 
         if not unique_combinations:
-            print("Error: No valid (n, T, p) combinations found matching the criteria.")
+            print(
+                "Error: No valid subdirectories with data found matching the criteria."
+            )
             return pd.DataFrame()
 
         target_combinations = sorted(list(unique_combinations))
-        print(
-            f"Found {len(target_combinations)} matching unique (n, T, p) combinations."
-        )
+        if verbose:
+            print(
+                f"Found {len(target_combinations)} matching unique (n, T, p) combinations with data."
+            )
 
     all_ps_dfs: List[pd.DataFrame] = []
     processed_combinations_count = 0
-    # Store total samples for each combination to calculate probabilities later
-    # combination_results = {} # No longer needed with this structure
+    min_val_override, max_val_override = (None, None)  # Default to None
+    if value_range:
+        if len(value_range) == 2:
+            min_val_override, max_val_override = value_range
+        else:
+            print(
+                "Warning: value_range must be a tuple of two floats (min, max). Ignoring provided value_range."
+            )
 
     for comb_n, comb_T, comb_p in target_combinations:
-        print(f"Processing combination: n={comb_n}, T={comb_T}, p={comb_p}")
-        # Call the function which now returns df_ps and total_samples
-        df_ps_single, total_samples = calculate_df_ps_for_combination(
+        if verbose:
+            print(f"\nProcessing combination: n={comb_n}, T={comb_T}, p={comb_p}")
+        df_agg_single, total_samples = calculate_df_agg_for_combination(
             n=comb_n,
             T=comb_T,
             p=comb_p,
             data_dir=data_dir,
-            cluster_frac_precision=cluster_frac_precision,
+            num_hist_bins=num_hist_bins,
+            min_value_override=min_val_override,
+            max_value_override=max_val_override,
+            ascending_confidence=ascending_confidence,
+            by=by,
+            verbose=verbose,
         )
 
-        if not df_ps_single.empty and total_samples > 0:
-            # --- Calculate probabilities using total_samples for the group ---
-            print(f"  Calculating probabilities for {total_samples} total samples...")
-            # Calculate p_acc and its confidence interval (num_trials = total_samples)
-            p_acc, delta_p_acc = _calculate_p_confint(
-                total_samples, df_ps_single["num_accs"]
-            )
-
-            # Calculate p_fail and its confidence interval (trials = num_accs, successes = num_fails)
-            # Ensure num_accs > 0 to avoid division by zero or invalid inputs
-            valid_fail_calc = df_ps_single["num_accs"] > 0
-            p_fail = pd.Series(np.nan, index=df_ps_single.index)
-            delta_p_fail = pd.Series(np.nan, index=df_ps_single.index)
-
-            if valid_fail_calc.any():
-                # Use .loc for safe assignment based on the boolean mask
-                p_fail_valid, delta_p_fail_valid = _calculate_p_confint(
-                    df_ps_single.loc[valid_fail_calc, "num_accs"],
-                    df_ps_single.loc[valid_fail_calc, "num_fails"],
-                )
-                p_fail.loc[valid_fail_calc] = p_fail_valid
-                delta_p_fail.loc[valid_fail_calc] = delta_p_fail_valid
-
-            # Add calculated probabilities and parameters to the DataFrame
-            df_ps_single["p_abort"] = 1.0 - p_acc
-            df_ps_single["delta_p_abort"] = delta_p_acc
-            df_ps_single["p_fail"] = p_fail
-            df_ps_single["delta_p_fail"] = delta_p_fail
-            # --- End Probability Calculation ---
-
-            df_ps_single["n"] = comb_n  # Use loop variables
-            df_ps_single["T"] = comb_T  # Use loop variables
-            df_ps_single["p"] = comb_p  # Use loop variables
-            all_ps_dfs.append(df_ps_single)  # Add the processed DataFrame to the list
+        if not df_agg_single.empty and total_samples > 0:
+            df_agg_single["n"] = comb_n
+            df_agg_single["T"] = comb_T
+            df_agg_single["p"] = comb_p
+            all_ps_dfs.append(df_agg_single)
             processed_combinations_count += 1
-            print(
-                f"  → Successfully processed combination, added {len(df_ps_single)} rows to results."
-            )
+            if verbose:
+                print(
+                    f"  -> Successfully processed combination, added {len(df_agg_single)} rows to results."
+                )
         else:
-            print(
-                f"  → No df_ps data generated or an error occurred for n={comb_n}, T={comb_T}, p={comb_p}."
-            )
+            if verbose:
+                print(
+                    f"  -> No df_agg data generated or an error occurred for n={comb_n}, T={comb_T}, p={comb_p}."
+                )
 
     if not all_ps_dfs:
         print(
-            "\nError: No df_ps dataframes were successfully generated for any matching combination."
+            "\nError: No df_agg dataframes were successfully generated for any matching combination."
         )
         return pd.DataFrame()
 
-    print(
-        f"\nConcatenating results for {processed_combinations_count} successful combinations..."
-    )
+    if verbose:
+        print(
+            f"\nConcatenating results for {processed_combinations_count} successful combinations..."
+        )
     try:
-        all_df_ps = pd.concat(all_ps_dfs, ignore_index=True)
+        all_df_agg = pd.concat(all_ps_dfs, ignore_index=True)
     except Exception as e:
         print(f"Error during final concatenation: {e}")
-        # Attempt to return partial results if concatenation fails? Or empty?
-        # For now, return empty as the final structure is compromised.
         return pd.DataFrame()
 
-    print("Setting multi-index (n, T, p, c)...")
+    if verbose:
+        print("Setting multi-index (n, T, p, <binned_value_column>)...")
     try:
-        # Ensure required columns exist before setting index
-        required_cols = ["n", "T", "p", "c"]
-        if not all(col in all_df_ps.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in all_df_ps.columns]
-            print(f"Error: Cannot set multi-index. Missing columns: {missing}")
-            print("Returning concatenated DataFrame without multi-index.")
-            return all_df_ps
+        # Determine the name of the column used for binning for the index
+        binned_value_idx_col_name = "cluster_frac" if by == "cluster_frac" else by
 
-        all_df_ps = all_df_ps.set_index(required_cols)
-        print("Sorting index...")
-        all_df_ps = all_df_ps.sort_index()
-        print("Concatenation and indexing complete.")
+        required_cols = ["n", "T", "p", binned_value_idx_col_name]
+        if not all(col in all_df_agg.columns for col in required_cols):
+            missing = [col for col in required_cols if col not in all_df_agg.columns]
+            print(f"Error: Cannot set multi-index. Missing columns: {missing}")
+            print("Columns available:", all_df_agg.columns.tolist())
+            print("Returning concatenated DataFrame without multi-index.")
+            return all_df_agg
+
+        all_df_agg = all_df_agg.set_index(required_cols)
+        if verbose:
+            print("Sorting index...")
+        all_df_agg = all_df_agg.sort_index()
+        if verbose:
+            print("Concatenation and indexing complete.")
     except Exception as e:
         print(f"An unexpected error occurred during final indexing/sorting: {e}")
         print("Returning concatenated DataFrame without multi-index.")
-        # Return the unindexed but concatenated frame in case of error
-        # The probability columns should already be there
-        return all_df_ps  # Return the already concatenated frame
+        return all_df_agg
 
-    return all_df_ps
+    return all_df_agg
+
+
+def calculate_confidence_interval(n, k, alpha=0.05, method="wilson"):
+    p_low, p_upp = proportion_confint(k, n, alpha=alpha, method=method)
+    p = (p_low + p_upp) / 2
+    delta_p = p_upp - p
+    return p, delta_p
+
+
+def get_df_ps(df_agg, ascending_confidence=True):
+    if ascending_confidence:
+        df_agg = df_agg.iloc[::-1]
+
+    shots = df_agg["count"].sum()
+
+    # Ignoring convergence
+
+    counts, num_fails = (
+        df_agg["count"].cumsum(),
+        df_agg["num_fails"].cumsum(),
+    )
+
+    pfail, delta_pfail = calculate_confidence_interval(counts, num_fails)
+    pacc, delta_pacc = calculate_confidence_interval(shots, counts)
+
+    # Treating convergence = confident
+
+    counts_conv = df_agg["count"] - df_agg["num_converged"]
+    counts_conv.iloc[0] += df_agg["num_converged"].sum()
+    counts_conv = counts_conv.cumsum()
+
+    assert counts_conv.iloc[-1] == shots
+
+    num_fails_conv = df_agg["num_fails"] - df_agg["num_converged_fails"]
+    num_fails_conv.iloc[0] += df_agg["num_converged_fails"].sum()
+    num_fails_conv = num_fails_conv.cumsum()
+
+    pfail_conv, delta_pfail_conv = calculate_confidence_interval(
+        counts_conv, num_fails_conv
+    )
+    pacc_conv, delta_pacc_conv = calculate_confidence_interval(shots, counts_conv)
+
+    df_ps = pd.DataFrame(index=df_agg.index)
+
+    df_ps["p_fail"] = pfail
+    df_ps["delta_p_fail"] = delta_pfail
+    df_ps["p_abort"] = 1 - pacc
+    df_ps["delta_p_abort"] = delta_pacc
+
+    df_ps["p_fail_conv"] = pfail_conv
+    df_ps["delta_p_fail_conv"] = delta_pfail_conv
+    df_ps["p_abort_conv"] = 1 - pacc_conv
+    df_ps["delta_p_abort_conv"] = delta_pacc_conv
+
+    df_ps["count"] = counts
+    df_ps["num_fails"] = num_fails
+    df_ps["count_conv"] = counts_conv
+    df_ps["num_fails_conv"] = num_fails_conv
+
+    return df_ps

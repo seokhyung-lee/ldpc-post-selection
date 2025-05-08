@@ -1,9 +1,9 @@
 import stim
 
-from .ext.SlidingWindowDecoder.src.build_circuit import (
-    build_circuit as build_BB_circuit_swd,
-)
-from .ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
+# from .ext.SlidingWindowDecoder.src.build_circuit import (
+#     build_circuit as build_BB_circuit_swd,
+# )
+# from .ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
 
 
 def build_surface_code_circuit(
@@ -68,62 +68,62 @@ def get_BB_distance(n: int) -> int:
     return distance_dict[n]
 
 
-def build_BB_circuit(*, n: int, T: int, p: float) -> stim.Circuit:
-    """
-    Build a stim circuit for a Bivariate Bicycle (BB) code.
+# def build_BB_circuit(*, n: int, T: int, p: float) -> stim.Circuit:
+#     """
+#     Build a stim circuit for a Bivariate Bicycle (BB) code.
 
-    Currently supported values for `n` correspond to specific code parameters:
-    - n=72 (d=6)
-    - n=90 (d=10)
-    - n=108 (d=10)
-    - n=144 (d=12)
-    - n=288 (d=18)
-    - n=360 (d<=24)
-    - n=756 (d<=34)
+#     Currently supported values for `n` correspond to specific code parameters:
+#     - n=72 (d=6)
+#     - n=90 (d=10)
+#     - n=108 (d=10)
+#     - n=144 (d=12)
+#     - n=288 (d=18)
+#     - n=360 (d<=24)
+#     - n=756 (d<=34)
 
-    Parameters
-    ----------
-    n : int
-        The number of physical qubits. Must be one of the supported values.
-    T : int
-        The number of measurement rounds.
-    p : float
-        The physical error rate.
+#     Parameters
+#     ----------
+#     n : int
+#         The number of physical qubits. Must be one of the supported values.
+#     T : int
+#         The number of measurement rounds.
+#     p : float
+#         The physical error rate.
 
-    Returns
-    -------
-    stim.Circuit
-        The generated stim circuit for the specified BB code.
-    """
-    if n == 72:  # d=6
-        args = 6, 6, [3], [1, 2], [1, 2], [3]
-    elif n == 90:  # d=10
-        args = 15, 3, [9], [1, 2], [2, 7], [0]
-    elif n == 108:  # d=10
-        args = 9, 6, [3], [1, 2], [1, 2], [3]
-    elif n == 144:  # d=12
-        args = 12, 6, [3], [1, 2], [1, 2], [3]
-    elif n == 288:  # d=18
-        args = 12, 12, [3], [2, 7], [1, 2], [3]
-    elif n == 360:  # d<=24
-        args = 30, 6, [9], [1, 2], [25, 26], [3]
-    elif n == 756:  # d<=34
-        args = 21, 18, [3], [10, 17], [3, 19], [5]
-    else:
-        raise ValueError(f"Unsupported code size: {n}")
+#     Returns
+#     -------
+#     stim.Circuit
+#         The generated stim circuit for the specified BB code.
+#     """
+#     if n == 72:  # d=6
+#         args = 6, 6, [3], [1, 2], [1, 2], [3]
+#     elif n == 90:  # d=10
+#         args = 15, 3, [9], [1, 2], [2, 7], [0]
+#     elif n == 108:  # d=10
+#         args = 9, 6, [3], [1, 2], [1, 2], [3]
+#     elif n == 144:  # d=12
+#         args = 12, 6, [3], [1, 2], [1, 2], [3]
+#     elif n == 288:  # d=18
+#         args = 12, 12, [3], [2, 7], [1, 2], [3]
+#     elif n == 360:  # d<=24
+#         args = 30, 6, [9], [1, 2], [25, 26], [3]
+#     elif n == 756:  # d<=34
+#         args = 21, 18, [3], [10, 17], [3, 19], [5]
+#     else:
+#         raise ValueError(f"Unsupported code size: {n}")
 
-    code, A_list, B_list = create_bivariate_bicycle_codes(*args)
-    circuit = build_BB_circuit_swd(
-        code,
-        A_list,
-        B_list,
-        p=p,
-        # physical error rate
-        num_repeat=T,
-        # usually set to code distance
-        z_basis=True,
-        # whether in the z-basis or x-basis
-        use_both=False,
-        # whether use measurement results in both basis to decode one basis
-    )
-    return circuit
+#     code, A_list, B_list = create_bivariate_bicycle_codes(*args)
+#     circuit = build_BB_circuit_swd(
+#         code,
+#         A_list,
+#         B_list,
+#         p=p,
+#         # physical error rate
+#         num_repeat=T,
+#         # usually set to code distance
+#         z_basis=True,
+#         # whether in the z-basis or x-basis
+#         use_both=False,
+#         # whether use measurement results in both basis to decode one basis
+#     )
+#     return circuit
