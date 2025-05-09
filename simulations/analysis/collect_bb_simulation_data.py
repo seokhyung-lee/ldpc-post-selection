@@ -246,11 +246,14 @@ def calculate_df_agg_for_combination(
     by : str, optional
         Column to aggregate by. Defaults to "cluster_frac".
         If "cluster_frac", values from "total_cluster_size" are read and
-        normalized by `num_errors`.
+        normalized by `num_errors` by the underlying aggregation function.
         If "cluster_frac_bp_llr", the ratio total_cluster_bp_llr / (total_cluster_bp_llr + outside_cluster_bp_llr) is used.
         If "cluster_frac_llr", the ratio total_cluster_llr / (total_cluster_llr + outside_cluster_llr) is used.
-        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - total_cluster_bp_llr is used.
-        If "cluster_gap_llr", the difference outside_cluster_llr - total_cluster_llr is used.
+        If "cluster_bp_llr_gap", the difference outside_cluster_bp_llr - total_cluster_bp_llr is used.
+        If "cluster_llr_gap", the difference outside_cluster_llr - total_cluster_llr is used.
+        If "cluster_llr_norm_gap", the difference outside_cluster_llr - cluster_llr_norm is used.
+        If "cluster_bp_llr_plus_gap", the difference outside_cluster_bp_llr_plus - cluster_bp_llr_plus is used.
+        If "cluster_bp_llr_plus_norm_gap", the difference outside_cluster_bp_llr_plus - cluster_bp_llr_plus_norm is used.
         Otherwise, `by` is treated as the direct column name to read and use raw values from.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
@@ -281,10 +284,22 @@ def calculate_df_agg_for_combination(
             actual_columns_to_read = ["total_cluster_bp_llr", "outside_cluster_bp_llr"]
         elif by == "cluster_frac_llr":
             actual_columns_to_read = ["total_cluster_llr", "outside_cluster_llr"]
-        elif by == "cluster_gap_bp_llr":
+        elif by == "cluster_bp_llr_gap":
             actual_columns_to_read = ["outside_cluster_bp_llr", "total_cluster_bp_llr"]
-        elif by == "cluster_gap_llr":
+        elif by == "cluster_llr_gap":
             actual_columns_to_read = ["outside_cluster_llr", "total_cluster_llr"]
+        elif by == "cluster_llr_norm_gap":
+            actual_columns_to_read = ["outside_cluster_llr", "cluster_llr_norm"]
+        elif by == "cluster_bp_llr_plus_gap":
+            actual_columns_to_read = [
+                "outside_cluster_bp_llr_plus",
+                "total_cluster_bp_llr_plus",
+            ]
+        elif by == "cluster_bp_llr_plus_norm_gap":
+            actual_columns_to_read = [
+                "outside_cluster_bp_llr_plus",
+                "cluster_bp_llr_plus_norm",
+            ]
         else:
             actual_columns_to_read = [by]  # Direct column name
 
@@ -367,15 +382,30 @@ def calculate_df_agg_for_combination(
                             temp_series_to_bin = numerator / denominator.replace(
                                 0, np.nan
                             )  # Avoid division by zero
-                        elif by == "cluster_gap_bp_llr":
+                        elif by == "cluster_bp_llr_gap":
                             temp_series_to_bin = (
                                 df_temp["outside_cluster_bp_llr"]
                                 - df_temp["total_cluster_bp_llr"]
                             )
-                        elif by == "cluster_gap_llr":
+                        elif by == "cluster_llr_gap":
                             temp_series_to_bin = (
                                 df_temp["outside_cluster_llr"]
                                 - df_temp["total_cluster_llr"]
+                            )
+                        elif by == "cluster_llr_norm_gap":
+                            temp_series_to_bin = (
+                                df_temp["outside_cluster_llr"]
+                                - df_temp["cluster_llr_norm"]
+                            )
+                        elif by == "cluster_bp_llr_plus_gap":
+                            temp_series_to_bin = (
+                                df_temp["outside_cluster_bp_llr_plus"]
+                                - df_temp["total_cluster_bp_llr_plus"]
+                            )
+                        elif by == "cluster_bp_llr_plus_norm_gap":
+                            temp_series_to_bin = (
+                                df_temp["outside_cluster_bp_llr_plus"]
+                                - df_temp["cluster_bp_llr_plus_norm"]
                             )
                         else:  # Direct column name
                             temp_series_to_bin = df_temp[actual_columns_to_read[0]]
@@ -523,15 +553,29 @@ def calculate_df_agg_for_combination(
                     series_to_bin = numerator / denominator.replace(
                         0, np.nan
                     )  # Avoid division by zero
-                elif by == "cluster_gap_bp_llr":
+                elif by == "cluster_bp_llr_gap":
                     series_to_bin = (
                         df_single["outside_cluster_bp_llr"]
                         - df_single["total_cluster_bp_llr"]
                     )
-                elif by == "cluster_gap_llr":
+                elif by == "cluster_llr_gap":
                     series_to_bin = (
                         df_single["outside_cluster_llr"]
                         - df_single["total_cluster_llr"]
+                    )
+                elif by == "cluster_llr_norm_gap":
+                    series_to_bin = (
+                        df_single["outside_cluster_llr"] - df_single["cluster_llr_norm"]
+                    )
+                elif by == "cluster_bp_llr_plus_gap":
+                    series_to_bin = (
+                        df_single["outside_cluster_bp_llr_plus"]
+                        - df_single["total_cluster_bp_llr_plus"]
+                    )
+                elif by == "cluster_bp_llr_plus_norm_gap":
+                    series_to_bin = (
+                        df_single["outside_cluster_bp_llr_plus"]
+                        - df_single["cluster_bp_llr_plus_norm"]
                     )
                 else:  # Direct column name
                     series_to_bin = df_single[actual_columns_to_read[0]]
@@ -689,8 +733,11 @@ def aggregate_data(
         normalized by `num_errors` by the underlying aggregation function.
         If "cluster_frac_bp_llr", the ratio total_cluster_bp_llr / (total_cluster_bp_llr + outside_cluster_bp_llr) is used.
         If "cluster_frac_llr", the ratio total_cluster_llr / (total_cluster_llr + outside_cluster_llr) is used.
-        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - total_cluster_bp_llr is used.
-        If "cluster_gap_llr", the difference outside_cluster_llr - total_cluster_llr is used.
+        If "cluster_bp_llr_gap", the difference outside_cluster_bp_llr - total_cluster_bp_llr is used.
+        If "cluster_llr_gap", the difference outside_cluster_llr - total_cluster_llr is used.
+        If "cluster_llr_norm_gap", the difference outside_cluster_llr - cluster_llr_norm is used.
+        If "cluster_bp_llr_plus_gap", the difference outside_cluster_bp_llr_plus - cluster_bp_llr_plus is used.
+        If "cluster_bp_llr_plus_norm_gap", the difference outside_cluster_bp_llr_plus - cluster_bp_llr_plus_norm is used.
         Otherwise, `by` is treated as the direct column name to read and use raw values from.
     n : int, optional
         Specific number of qubits for the BB code. If None, scan for all n.
