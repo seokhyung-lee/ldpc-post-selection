@@ -97,6 +97,7 @@ def _calculate_histograms_numba(
     converge_mask_np: np.ndarray,  # Expect boolean array
     converge_counts_hist: np.ndarray,  # Expect int64 array
     fail_converge_counts_hist: np.ndarray,  # Expect int64 array
+    fail_bp_mask_np: np.ndarray,  # Expect boolean array, new parameter
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Calculate total, fail, converge, and fail_converge histograms using Numba with an optimized single loop.
@@ -119,7 +120,9 @@ def _calculate_histograms_numba(
     converge_counts_hist : 1D numpy array of int64
         Histogram counts for converged samples (updated in-place).
     fail_converge_counts_hist : 1D numpy array of int64
-        Histogram counts for samples where both fail and converge are true (updated in-place).
+        Histogram counts for samples where both fail_bp and converge are true (updated in-place).
+    fail_bp_mask_np : 1D numpy array of bool
+        Indicates failures based on BP decoder, aligned with values_np.
 
     Returns
     -------
@@ -187,8 +190,8 @@ def _calculate_histograms_numba(
             if converge_mask_np[i]:
                 converge_counts_hist[bin_idx] += 1
             if (
-                fail_mask_np[i] and converge_mask_np[i]
-            ):  # Check for both fail and converge
+                fail_bp_mask_np[i] and converge_mask_np[i]
+            ):  # Check for both fail_bp and converge
                 fail_converge_counts_hist[bin_idx] += 1
 
     return (
@@ -242,12 +245,12 @@ def calculate_df_agg_for_combination(
         value in `df_agg` for a bin will be its upper edge.
     by : str, optional
         Column to aggregate by. Defaults to "cluster_frac".
-        If "cluster_frac", values from "cluster_size_sum" are read and
+        If "cluster_frac", values from "total_cluster_size" are read and
         normalized by `num_errors`.
-        If "cluster_frac_bp_llr", the ratio cluster_bp_llr_sum / (cluster_bp_llr_sum + outside_cluster_bp_llr) is used.
-        If "cluster_frac_llr", the ratio cluster_llr_sum / (cluster_llr_sum + outside_cluster_llr) is used.
-        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - cluster_bp_llr_sum is used.
-        If "cluster_gap_llr", the difference outside_cluster_llr - cluster_llr_sum is used.
+        If "cluster_frac_bp_llr", the ratio total_cluster_bp_llr / (total_cluster_bp_llr + outside_cluster_bp_llr) is used.
+        If "cluster_frac_llr", the ratio total_cluster_llr / (total_cluster_llr + outside_cluster_llr) is used.
+        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - total_cluster_bp_llr is used.
+        If "cluster_gap_llr", the difference outside_cluster_llr - total_cluster_llr is used.
         Otherwise, `by` is treated as the direct column name to read and use raw values from.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
@@ -273,15 +276,15 @@ def calculate_df_agg_for_combination(
 
         actual_columns_to_read: list[str]
         if by == "cluster_frac":
-            actual_columns_to_read = ["cluster_size_sum"]
+            actual_columns_to_read = ["total_cluster_size"]
         elif by == "cluster_frac_bp_llr":
-            actual_columns_to_read = ["cluster_bp_llr_sum", "outside_cluster_bp_llr"]
+            actual_columns_to_read = ["total_cluster_bp_llr", "outside_cluster_bp_llr"]
         elif by == "cluster_frac_llr":
-            actual_columns_to_read = ["cluster_llr_sum", "outside_cluster_llr"]
+            actual_columns_to_read = ["total_cluster_llr", "outside_cluster_llr"]
         elif by == "cluster_gap_bp_llr":
-            actual_columns_to_read = ["outside_cluster_bp_llr", "cluster_bp_llr_sum"]
+            actual_columns_to_read = ["outside_cluster_bp_llr", "total_cluster_bp_llr"]
         elif by == "cluster_gap_llr":
-            actual_columns_to_read = ["outside_cluster_llr", "cluster_llr_sum"]
+            actual_columns_to_read = ["outside_cluster_llr", "total_cluster_llr"]
         else:
             actual_columns_to_read = [by]  # Direct column name
 
@@ -347,18 +350,18 @@ def calculate_df_agg_for_combination(
                                     df_temp[actual_columns_to_read[0]] / num_errors
                                 )
                         elif by == "cluster_frac_bp_llr":
-                            numerator = df_temp["cluster_bp_llr_sum"]
+                            numerator = df_temp["total_cluster_bp_llr"]
                             denominator = (
-                                df_temp["cluster_bp_llr_sum"]
+                                df_temp["total_cluster_bp_llr"]
                                 + df_temp["outside_cluster_bp_llr"]
                             )
                             temp_series_to_bin = numerator / denominator.replace(
                                 0, np.nan
                             )  # Avoid division by zero
                         elif by == "cluster_frac_llr":
-                            numerator = df_temp["cluster_llr_sum"]
+                            numerator = df_temp["total_cluster_llr"]
                             denominator = (
-                                df_temp["cluster_llr_sum"]
+                                df_temp["total_cluster_llr"]
                                 + df_temp["outside_cluster_llr"]
                             )
                             temp_series_to_bin = numerator / denominator.replace(
@@ -367,12 +370,12 @@ def calculate_df_agg_for_combination(
                         elif by == "cluster_gap_bp_llr":
                             temp_series_to_bin = (
                                 df_temp["outside_cluster_bp_llr"]
-                                - df_temp["cluster_bp_llr_sum"]
+                                - df_temp["total_cluster_bp_llr"]
                             )
                         elif by == "cluster_gap_llr":
                             temp_series_to_bin = (
                                 df_temp["outside_cluster_llr"]
-                                - df_temp["cluster_llr_sum"]
+                                - df_temp["total_cluster_llr"]
                             )
                         else:  # Direct column name
                             temp_series_to_bin = df_temp[actual_columns_to_read[0]]
@@ -437,6 +440,7 @@ def calculate_df_agg_for_combination(
             dummy_values = np.array([0.5], dtype=np.float64)
             dummy_fail_mask = np.array([True], dtype=bool)
             dummy_converge_mask = np.array([True], dtype=bool)
+            dummy_fail_bp_mask = np.array([True], dtype=bool)
             _calculate_histograms_numba(
                 dummy_values,
                 dummy_fail_mask,
@@ -446,6 +450,7 @@ def calculate_df_agg_for_combination(
                 dummy_converge_mask,
                 converge_counts_hist.copy(),
                 fail_converge_counts_hist.copy(),
+                dummy_fail_bp_mask,
             )
             if verbose:
                 print("Numba function pre-compiled.")
@@ -469,7 +474,7 @@ def calculate_df_agg_for_combination(
         # Dynamically determine required columns for main processing pass
         # Start with columns needed for the 'by' logic, then add common ones.
         required_columns_for_read = list(actual_columns_to_read)  # Copy the list
-        required_columns_for_read.extend(["fail", "converge"])
+        required_columns_for_read.extend(["fail", "converge", "fail_bp"])
         required_columns_for_read = sorted(list(set(required_columns_for_read)))
 
         for i, file_path in tqdm(list(enumerate(file_paths))):
@@ -501,18 +506,19 @@ def calculate_df_agg_for_combination(
                             df_single[actual_columns_to_read[0]] / num_errors
                         )
                 elif by == "cluster_frac_bp_llr":
-                    numerator = df_single["cluster_bp_llr_sum"]
+                    numerator = df_single["total_cluster_bp_llr"]
                     denominator = (
-                        df_single["cluster_bp_llr_sum"]
+                        df_single["total_cluster_bp_llr"]
                         + df_single["outside_cluster_bp_llr"]
                     )
                     series_to_bin = numerator / denominator.replace(
                         0, np.nan
                     )  # Avoid division by zero
                 elif by == "cluster_frac_llr":
-                    numerator = df_single["cluster_llr_sum"]
+                    numerator = df_single["total_cluster_llr"]
                     denominator = (
-                        df_single["cluster_llr_sum"] + df_single["outside_cluster_llr"]
+                        df_single["total_cluster_llr"]
+                        + df_single["outside_cluster_llr"]
                     )
                     series_to_bin = numerator / denominator.replace(
                         0, np.nan
@@ -520,11 +526,12 @@ def calculate_df_agg_for_combination(
                 elif by == "cluster_gap_bp_llr":
                     series_to_bin = (
                         df_single["outside_cluster_bp_llr"]
-                        - df_single["cluster_bp_llr_sum"]
+                        - df_single["total_cluster_bp_llr"]
                     )
                 elif by == "cluster_gap_llr":
                     series_to_bin = (
-                        df_single["outside_cluster_llr"] - df_single["cluster_llr_sum"]
+                        df_single["outside_cluster_llr"]
+                        - df_single["total_cluster_llr"]
                     )
                 else:  # Direct column name
                     series_to_bin = df_single[actual_columns_to_read[0]]
@@ -562,6 +569,11 @@ def calculate_df_agg_for_combination(
                         .reindex(series_to_bin_cleaned.index)
                         .to_numpy()
                     )
+                    fail_bp_mask = (
+                        df_single["fail_bp"]
+                        .reindex(series_to_bin_cleaned.index)
+                        .to_numpy()
+                    )
 
                     (
                         total_counts_hist,
@@ -577,6 +589,7 @@ def calculate_df_agg_for_combination(
                         converge_mask,
                         converge_counts_hist,
                         fail_converge_counts_hist,
+                        fail_bp_mask,
                     )
 
                 hist_time = time.perf_counter() - start_time
@@ -591,6 +604,8 @@ def calculate_df_agg_for_combination(
                     del fail_mask
                 if "converge_mask" in locals():
                     del converge_mask
+                if "fail_bp_mask" in locals():
+                    del fail_bp_mask
 
             except Exception as e:
                 print(f"Warning: Error processing file {file_path}: {e}")
@@ -670,12 +685,12 @@ def aggregate_data(
         Base directory path containing the `n{n}_T{T}_p{p}` subdirectories.
     by : str, optional
         Column to aggregate by. Defaults to "cluster_frac".
-        If "cluster_frac", values from "cluster_size_sum" are read and
+        If "cluster_frac", values from "total_cluster_size" are read and
         normalized by `num_errors` by the underlying aggregation function.
-        If "cluster_frac_bp_llr", the ratio cluster_bp_llr_sum / (cluster_bp_llr_sum + outside_cluster_bp_llr) is used.
-        If "cluster_frac_llr", the ratio cluster_llr_sum / (cluster_llr_sum + outside_cluster_llr) is used.
-        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - cluster_bp_llr_sum is used.
-        If "cluster_gap_llr", the difference outside_cluster_llr - cluster_llr_sum is used.
+        If "cluster_frac_bp_llr", the ratio total_cluster_bp_llr / (total_cluster_bp_llr + outside_cluster_bp_llr) is used.
+        If "cluster_frac_llr", the ratio total_cluster_llr / (total_cluster_llr + outside_cluster_llr) is used.
+        If "cluster_gap_bp_llr", the difference outside_cluster_bp_llr - total_cluster_bp_llr is used.
+        If "cluster_gap_llr", the difference outside_cluster_llr - total_cluster_llr is used.
         Otherwise, `by` is treated as the direct column name to read and use raw values from.
     n : int, optional
         Specific number of qubits for the BB code. If None, scan for all n.

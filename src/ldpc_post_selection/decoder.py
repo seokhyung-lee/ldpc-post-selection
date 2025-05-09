@@ -163,20 +163,21 @@ class BpLsdPsDecoder:
 
         soft_info["total_boundary_size"] = total_boundary_size
 
+        def max_or_zero(x):
+            return np.max(x) if x else 0
+
         # Cluster size sum & max cluster size
         soft_info["total_cluster_size"] = sum(final_cluster_bit_counts)
-        soft_info["max_cluster_size"] = (
-            max(final_cluster_bit_counts) if final_cluster_bit_counts else 0
-        )
+        soft_info["max_cluster_size"] = max_or_zero(final_cluster_bit_counts)
         soft_info["cluster_num"] = len(final_cluster_bit_counts)
 
         # LLR of final clusters
         soft_info["total_cluster_llr"] = np.sum(final_cluster_llrs)
         soft_info["total_cluster_bp_llr"] = np.sum(final_cluster_bp_llrs)
         soft_info["total_cluster_bp_llr_plus"] = np.sum(final_cluster_bp_llrs_plus)
-        soft_info["max_cluster_llr"] = max(final_cluster_llrs)
-        soft_info["max_cluster_bp_llr"] = max(final_cluster_bp_llrs)
-        soft_info["max_cluster_bp_llr_plus"] = max(final_cluster_bp_llrs_plus)
+        soft_info["max_cluster_llr"] = max_or_zero(final_cluster_llrs)
+        soft_info["max_cluster_bp_llr"] = max_or_zero(final_cluster_bp_llrs)
+        soft_info["max_cluster_bp_llr_plus"] = max_or_zero(final_cluster_bp_llrs_plus)
 
         # LLR outside clusters
         soft_info["outside_cluster_llr"] = np.sum(llrs) - soft_info["total_cluster_llr"]

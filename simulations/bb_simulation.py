@@ -8,7 +8,7 @@ import pandas as pd
 import stim
 from joblib import Parallel, delayed
 
-from src.ldpc_post_selection.build_circuit import get_BB_distance
+from src.ldpc_post_selection.build_circuit import build_BB_circuit, get_BB_distance
 from src.ldpc_post_selection.decoder import BpLsdPsDecoder
 
 
@@ -40,75 +40,75 @@ def _convert_df_dtypes_for_feather(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_bb_circuit(p: float, n: int, T: int) -> stim.Circuit:
-    """
-    Load a Stim circuit from a file.
+# def load_bb_circuit(p: float, n: int, T: int) -> stim.Circuit:
+#     """
+#     Load a Stim circuit from a file.
 
-    The function searches for a .stim file in the 'circuits/bb_codes/' directory.
-    The filename is expected to contain substrings matching "p={p}", "nkd=[[{n}",
-    and "r={T}".
+#     The function searches for a .stim file in the 'circuits/bb_codes/' directory.
+#     The filename is expected to contain substrings matching "p={p}", "nkd=[[{n}",
+#     and "r={T}".
 
-    Parameters
-    ----------
-    p : float
-        Circuit-level error probability.
-    n : int
-        Number of qubits.
-    T : int
-        Number of rounds.
+#     Parameters
+#     ----------
+#     p : float
+#         Circuit-level error probability.
+#     n : int
+#         Number of qubits.
+#     T : int
+#         Number of rounds.
 
-    Returns
-    -------
-    circuit : stim.Circuit
-        The loaded Stim circuit object.
+#     Returns
+#     -------
+#     circuit : stim.Circuit
+#         The loaded Stim circuit object.
 
-    Raises
-    ------
-    FileNotFoundError
-        If no file matching the criteria is found in 'circuits/bb_codes/'.
-    ValueError
-        If multiple files matching the criteria are found.
-    IOError
-        If the 'circuits/bb_codes/' directory does not exist.
-    """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    circuits_dir = os.path.join(current_dir, "circuits/bb_codes")
+#     Raises
+#     ------
+#     FileNotFoundError
+#         If no file matching the criteria is found in 'circuits/bb_codes/'.
+#     ValueError
+#         If multiple files matching the criteria are found.
+#     IOError
+#         If the 'circuits/bb_codes/' directory does not exist.
+#     """
+#     current_dir = os.path.dirname(os.path.abspath(__file__))
+#     circuits_dir = os.path.join(current_dir, "circuits/bb_codes")
 
-    if not os.path.isdir(circuits_dir):
-        raise IOError(
-            f"Directory not found: {circuits_dir}. Ensure this path is correct relative to your execution directory or an absolute path."
-        )
+#     if not os.path.isdir(circuits_dir):
+#         raise IOError(
+#             f"Directory not found: {circuits_dir}. Ensure this path is correct relative to your execution directory or an absolute path."
+#         )
 
-    found_files = []
-    # Construct search patterns based on user's specifications
-    pattern_p = f"p={p}"
-    pattern_n = f"nkd=[[{n}"
-    pattern_T = f"r={T}"
-    pattern_c = "c=bivariate_bicycle_Z"
+#     found_files = []
+#     # Construct search patterns based on user's specifications
+#     pattern_p = f"p={p}"
+#     pattern_n = f"nkd=[[{n}"
+#     pattern_T = f"r={T}"
+#     pattern_c = "c=bivariate_bicycle_Z"
 
-    for filename in os.listdir(circuits_dir):
-        if (
-            pattern_p in filename
-            and pattern_n in filename
-            and pattern_T in filename
-            and pattern_c in filename
-            and filename.endswith(".stim")
-        ):
-            found_files.append(filename)
+#     for filename in os.listdir(circuits_dir):
+#         if (
+#             pattern_p in filename
+#             and pattern_n in filename
+#             and pattern_T in filename
+#             and pattern_c in filename
+#             and filename.endswith(".stim")
+#         ):
+#             found_files.append(filename)
 
-    if not found_files:
-        raise FileNotFoundError(
-            f"No .stim file found in '{circuits_dir}' matching criteria: "
-            f"p={p}, nkd=[[{n}, r={T}"
-        )
-    if len(found_files) > 1:
-        raise ValueError(
-            f"Multiple .stim files found in '{circuits_dir}' matching criteria: "
-            f"p={p}, nkd=[[{n}, r={T}. Files: {found_files}"
-        )
+#     if not found_files:
+#         raise FileNotFoundError(
+#             f"No .stim file found in '{circuits_dir}' matching criteria: "
+#             f"p={p}, nkd=[[{n}, r={T}"
+#         )
+#     if len(found_files) > 1:
+#         raise ValueError(
+#             f"Multiple .stim files found in '{circuits_dir}' matching criteria: "
+#             f"p={p}, nkd=[[{n}, r={T}. Files: {found_files}"
+#         )
 
-    circuit_file_path = os.path.join(circuits_dir, found_files[0])
-    return stim.Circuit.from_file(circuit_file_path)
+#     circuit_file_path = os.path.join(circuits_dir, found_files[0])
+#     return stim.Circuit.from_file(circuit_file_path)
 
 
 def task(
@@ -116,34 +116,38 @@ def task(
     p: float,
     n: int,
     T: int,
-) -> Tuple[np.ndarray, List[Dict[str, float | int | bool]]]:
-    if shots == 0:
-        return np.array([], dtype=bool), []
-
-    circuit = load_bb_circuit(p=p, n=n, T=T)
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict[str, float | int | bool]]]:
+    circuit = build_BB_circuit(p=p, n=n, T=T)
     sampler = circuit.compile_detector_sampler()
     det, obs = sampler.sample(shots, separate_observables=True)
 
     decoder = BpLsdPsDecoder(circuit=circuit)
-    fails = []
-    fails_bp = []
+    preds_list = []
+    preds_bp_list = []
     converges = []
     soft_infos = []
-    for det_sng, obs_sng in zip(det, obs):
+
+    for det_sng in det:
         pred, pred_bp, converge, soft_info = decoder.decode(det_sng, norm_order=0.5)
-        obs_pred = ((pred.astype("uint8") @ decoder.obs_matrix.T) % 2).astype(bool)
-        obs_pred_bp = ((pred_bp.astype("uint8") @ decoder.obs_matrix.T) % 2).astype(
-            bool
-        )
-        fail = np.any(obs_sng ^ obs_pred)
-        fail_bp = np.any(obs_sng ^ obs_pred_bp)
-        fails.append(fail)
-        fails_bp.append(fail_bp)
+
+        preds_list.append(pred)
+        preds_bp_list.append(pred_bp)
+
         converges.append(converge)
         soft_infos.append(soft_info)
-    fails = np.array(fails)
-    fails_bp = np.array(fails_bp)
+
     converges = np.array(converges)
+
+    preds_arr = np.array(preds_list)
+    preds_bp_arr = np.array(preds_bp_list)
+
+    obs_matrix_T = decoder.obs_matrix.T
+    obs_preds_arr = ((preds_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(bool)
+    obs_preds_bp_arr = ((preds_bp_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(bool)
+
+    # Compare with the true logical observables 'obs'
+    fails = np.any(obs ^ obs_preds_arr, axis=1)
+    fails_bp = np.any(obs ^ obs_preds_bp_arr, axis=1)
 
     return fails, fails_bp, converges, soft_infos
 
@@ -368,8 +372,8 @@ if __name__ == "__main__":
     # plist = [1e-3]
     nlist = [144]
 
-    max_shots_per_file = round(1e5)
-    total_shots = round(1e5)
+    max_shots_per_file = round(1e7)
+    total_shots = round(1e9)
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
@@ -391,4 +395,5 @@ if __name__ == "__main__":
                 max_shots_per_file=max_shots_per_file,
             )
 
-    print(f"\n==== Simulations completed ====")
+    t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n==== Simulations completed ({t0}) ====")
