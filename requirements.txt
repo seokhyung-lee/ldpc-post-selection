@@ -1,12 +1,9 @@
-arviz==0.20.0
-Cython==3.0.11
+cython==3.0.11
 matplotlib==3.10.1
 numpy==2.2.4
 scipy==1.15.2
-seaborn==0.13.2
 statsmodels==0.14.4
 stim==1.14.0
 joblib==1.4.2
-jupyterthemes==0.20.0
-bposd==2.1.0
+pandas==2.2.3
 src/ldpc_post_selection/ext/ldpc
