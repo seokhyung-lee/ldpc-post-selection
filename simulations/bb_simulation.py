@@ -367,13 +367,16 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3]
-    # nlist = [72, 108, 144, 288]
-    # plist = [1e-3]
-    nlist = [144]
+    plist = [1e-3, 3e-3, 5e-3]
+    nlist = [144]  # [72, 108, 144, 288]
 
-    max_shots_per_file = round(1e7)
-    total_shots = round(1e9)
+    max_shots_per_file = round(5e6)
+    total_shots = round(1e8)
+
+    # Estimated time (20 cores):
+    # p=1e-3, n=144: 100,000 shots/min
+    # p=3e-3, n=144: 50,000 shots/min
+    # p=5e-3, n=144: 12,500 shots/min
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
@@ -390,7 +393,7 @@ if __name__ == "__main__":
                 n=n,
                 T=T,
                 data_dir=data_dir,
-                n_jobs=19,
+                n_jobs=20,
                 repeat=10,
                 max_shots_per_file=max_shots_per_file,
             )

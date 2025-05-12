@@ -10,7 +10,7 @@ from .stim_tools import dem_to_parity_check
 
 class BpLsdPsDecoder:
     """
-    BP+LSD decoder with post-selection.
+    BP+LSD decoder with additional soft outputs.
     """
 
     _bplsd: BpLsdDecoder
@@ -33,7 +33,7 @@ class BpLsdPsDecoder:
         **kwargs,
     ):
         """
-        BP+LSD decoder with post-selection.
+        BP+LSD decoder with additional soft outputs.
 
         Parameters
         ----------
@@ -120,7 +120,7 @@ class BpLsdPsDecoder:
 
         ## Soft information
         stats: Dict[str, Any] = bplsd.statistics
-        soft_info: Dict[str, float | int] = {}
+        soft_outputs: Dict[str, float | int] = {}
 
         # Convergence
         converge = bplsd.converge
@@ -131,11 +131,13 @@ class BpLsdPsDecoder:
         bp_llrs_plus = np.clip(bp_llrs, 0.0, None)
 
         # Prediction LLR
-        soft_info["pred_llr"] = float(np.sum(llrs[pred]))
-        soft_info["pred_bp_llr"] = float(np.sum(bp_llrs[pred]))
+        soft_outputs["pred_llr"] = float(np.sum(llrs[pred]))
+        soft_outputs["pred_bp_llr"] = float(np.sum(bp_llrs[pred]))
 
         # Detector density
-        soft_info["detector_density"] = detector_outcomes.sum() / len(detector_outcomes)
+        soft_outputs["detector_density"] = detector_outcomes.sum() / len(
+            detector_outcomes
+        )
 
         # Cluster statistics
         individual_cluster_stats_dict: Dict[int, Dict[str, Any]] = stats[
@@ -161,31 +163,35 @@ class BpLsdPsDecoder:
                 assert len(inside_cnt) == self.H.shape[0]
                 total_boundary_size += np.sum((inside_cnt > 0) & (outside_cnt > 0))
 
-        soft_info["total_boundary_size"] = total_boundary_size
+        soft_outputs["total_boundary_size"] = total_boundary_size
 
         def max_or_zero(x):
             return np.max(x) if x else 0
 
         # Cluster size sum & max cluster size
-        soft_info["total_cluster_size"] = sum(final_cluster_bit_counts)
-        soft_info["max_cluster_size"] = max_or_zero(final_cluster_bit_counts)
-        soft_info["cluster_num"] = len(final_cluster_bit_counts)
+        soft_outputs["total_cluster_size"] = sum(final_cluster_bit_counts)
+        soft_outputs["max_cluster_size"] = max_or_zero(final_cluster_bit_counts)
+        soft_outputs["cluster_num"] = len(final_cluster_bit_counts)
 
         # LLR of final clusters
-        soft_info["total_cluster_llr"] = np.sum(final_cluster_llrs)
-        soft_info["total_cluster_bp_llr"] = np.sum(final_cluster_bp_llrs)
-        soft_info["total_cluster_bp_llr_plus"] = np.sum(final_cluster_bp_llrs_plus)
-        soft_info["max_cluster_llr"] = max_or_zero(final_cluster_llrs)
-        soft_info["max_cluster_bp_llr"] = max_or_zero(final_cluster_bp_llrs)
-        soft_info["max_cluster_bp_llr_plus"] = max_or_zero(final_cluster_bp_llrs_plus)
+        soft_outputs["total_cluster_llr"] = np.sum(final_cluster_llrs)
+        soft_outputs["total_cluster_bp_llr"] = np.sum(final_cluster_bp_llrs)
+        soft_outputs["total_cluster_bp_llr_plus"] = np.sum(final_cluster_bp_llrs_plus)
+        soft_outputs["max_cluster_llr"] = max_or_zero(final_cluster_llrs)
+        soft_outputs["max_cluster_bp_llr"] = max_or_zero(final_cluster_bp_llrs)
+        soft_outputs["max_cluster_bp_llr_plus"] = max_or_zero(
+            final_cluster_bp_llrs_plus
+        )
 
         # LLR outside clusters
-        soft_info["outside_cluster_llr"] = np.sum(llrs) - soft_info["total_cluster_llr"]
-        soft_info["outside_cluster_bp_llr"] = (
-            np.sum(bp_llrs) - soft_info["total_cluster_bp_llr"]
+        soft_outputs["outside_cluster_llr"] = (
+            np.sum(llrs) - soft_outputs["total_cluster_llr"]
         )
-        soft_info["outside_cluster_bp_llr_plus"] = (
-            np.sum(bp_llrs_plus) - soft_info["total_cluster_bp_llr_plus"]
+        soft_outputs["outside_cluster_bp_llr"] = (
+            np.sum(bp_llrs) - soft_outputs["total_cluster_bp_llr"]
+        )
+        soft_outputs["outside_cluster_bp_llr_plus"] = (
+            np.sum(bp_llrs_plus) - soft_outputs["total_cluster_bp_llr_plus"]
         )
 
         if norm_order is not None:
@@ -193,8 +199,8 @@ class BpLsdPsDecoder:
             def norm(x):
                 return np.power(np.sum(np.power(x, norm_order)), 1 / norm_order)
 
-            soft_info["cluster_llr_norm"] = norm(final_cluster_llrs)
+            soft_outputs["cluster_llr_norm"] = norm(final_cluster_llrs)
             # soft_info["cluster_bp_llr_norm"] = norm(final_cluster_bp_llrs)
-            soft_info["cluster_bp_llr_plus_norm"] = norm(final_cluster_bp_llrs_plus)
+            soft_outputs["cluster_bp_llr_plus_norm"] = norm(final_cluster_bp_llrs_plus)
 
-        return pred, pred_bp, converge, soft_info
+        return pred, pred_bp, converge, soft_outputs
