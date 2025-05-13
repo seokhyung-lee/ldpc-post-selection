@@ -1,7 +1,7 @@
 import os
 import warnings
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -9,7 +9,7 @@ import stim
 from joblib import Parallel, delayed
 
 from src.ldpc_post_selection.build_circuit import build_surface_code_circuit
-from src.ldpc_post_selection.decoder import BpLsdPsDecoder
+from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 
 
 def _convert_df_dtypes_for_feather(df: pd.DataFrame) -> pd.DataFrame:
@@ -44,16 +44,20 @@ def task(
     shots: int,
     p: float,
     d: int,
+    decoder_prms: Optional[Dict[str, Any]] = None,
+    norm_orders: Optional[float | List[float]] = None,
+    noise: str = "circuit-level",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict[str, float | int | bool]]]:
-    circuit = build_surface_code_circuit(p=p, d=d, T=d, noise="circuit-level")
+    circuit = build_surface_code_circuit(p=p, d=d, T=d, noise=noise)
     sampler = circuit.compile_detector_sampler()
     det, obs = sampler.sample(shots, separate_observables=True)
 
-    decoder = BpLsdPsDecoder(
+    if decoder_prms is None:
+        decoder_prms = {}
+
+    decoder = SoftOutputsBpLsdDecoder(
         circuit=circuit,
-        max_iter=30,
-        bp_method="minimum_sum",
-        lsd_method="LSD_0",
+        **decoder_prms,
     )
     preds_list = []
     preds_bp_list = []
@@ -61,7 +65,9 @@ def task(
     soft_infos = []
 
     for det_sng in det:
-        pred, pred_bp, converge, soft_info = decoder.decode(det_sng, norm_order=0.5)
+        pred, pred_bp, converge, soft_info = decoder.decode(
+            det_sng, norm_orders=norm_orders
+        )
 
         preds_list.append(pred)
         preds_bp_list.append(pred_bp)
@@ -86,7 +92,14 @@ def task(
 
 
 def task_parallel(
-    shots: int, p: float, d: int, n_jobs: int, repeat: int = 10
+    shots: int,
+    p: float,
+    d: int,
+    n_jobs: int,
+    repeat: int = 10,
+    decoder_prms: Optional[Dict[str, Any]] = None,
+    norm_orders: Optional[float | List[float]] = None,
+    noise: str = "circuit-level",
 ) -> pd.DataFrame:
     """
     Run the BB `task` function in parallel and return results as a DataFrame.
@@ -101,6 +114,14 @@ def task_parallel(
         Code distance.
     n_jobs : int
         Number of parallel jobs.
+    repeat : int
+        Number of repeats for parallel execution.
+    decoder_prms : Dict[str, Any]
+        Parameters for the decoder.
+    norm_orders : Optional[float | List[float]]
+        Norm orders for soft outputs.
+    noise : str
+        Noise model to use (e.g., "circuit-level", "phenomenological").
 
     Returns
     -------
@@ -114,7 +135,15 @@ def task_parallel(
 
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(
-        delayed(task)(shots=chunk, p=p, d=d) for chunk in chunk_sizes
+        delayed(task)(
+            shots=chunk,
+            p=p,
+            d=d,
+            decoder_prms=decoder_prms,
+            norm_orders=norm_orders,
+            noise=noise,
+        )
+        for chunk in chunk_sizes
     )
 
     # Unpack and combine results
@@ -184,6 +213,9 @@ def simulate(
     n_jobs: int,
     repeat: int,
     max_shots_per_file: int = 1_000_000,
+    decoder_prms: Optional[Dict[str, Any]] = None,
+    norm_orders: Optional[float | List[float]] = None,
+    noise: str = "circuit-level",
 ) -> None:
     """
     Run the simulation for a given (p, d) using Feather files and handle file I/O,
@@ -205,6 +237,12 @@ def simulate(
         Number of repeats for parallel execution.
     max_shots_per_file : int
         Maximum number of shots per file.
+    decoder_prms : Dict[str, Any]
+        Parameters for the decoder.
+    norm_orders : Optional[float | List[float]]
+        Norm orders for soft outputs.
+    noise : str
+        Noise model to use (e.g., "circuit-level", "phenomenological").
 
     Returns
     -------
@@ -252,11 +290,19 @@ def simulate(
                     f"Could not read {fp} for appending: {e}. Starting from new shots for this file."
                 )
                 df_existing = pd.DataFrame()  # Start fresh for this file if read fails
-            df_new = task_parallel(to_run, p, d, n_jobs=n_jobs, repeat=repeat)
+            df_new = task_parallel(
+                to_run,
+                p,
+                d,
+                n_jobs=n_jobs,
+                repeat=repeat,
+                decoder_prms=decoder_prms,
+                norm_orders=norm_orders,
+                noise=noise,
+            )
             df_combined = pd.concat([df_existing, df_new], ignore_index=True)
             df_combined = _convert_df_dtypes_for_feather(df_combined)
             df_combined.to_feather(fp)
-            remaining -= to_run
             print(
                 f"   Appended {to_run} shots. {remaining} shots remaining for this config."
             )
@@ -279,7 +325,16 @@ def simulate(
         print(
             f"\n[{t0}] Simulating {to_run} shots for p={p}, d={d}, creating {sub_dirname}/{fname_new}"
         )
-        df_new = task_parallel(to_run, p, d, n_jobs=n_jobs, repeat=repeat)
+        df_new = task_parallel(
+            to_run,
+            p,
+            d,
+            n_jobs=n_jobs,
+            repeat=repeat,
+            decoder_prms=decoder_prms,
+            norm_orders=norm_orders,
+            noise=noise,
+        )
         df_new = _convert_df_dtypes_for_feather(df_new)
         df_new.to_feather(fp_new)
         remaining -= to_run
@@ -295,31 +350,49 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3, 3e-5, 5e-5]
-    dlist = [5]
+    plist = [1e-3, 3e-3, 5e-3]
+    dlist = [5, 9, 13]
+    noise_model = "circuit-level"
+
+    decoder_prms = {
+        "max_iter": 30,
+        "bp_method": "minimum_sum",
+        "lsd_method": "LSD_0",
+        "lsd_order": 0,
+    }
+    norm_orders = [0.5]
 
     max_shots_per_file = round(1e7)
-    total_shots = round(1e9)
+    total_shots = round(1e7)
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(
-        current_dir, "data/surface_code_capacity_iter30_minsum_lsd0"
-    )
+    data_dir_base = "data/surface_code_circuit_iter30_minsum_lsd0"
+    data_dir = os.path.join(current_dir, data_dir_base)
     os.makedirs(data_dir, exist_ok=True)
 
-    print(f"\n==== Starting simulations up to {total_shots} shots ====")
-    for p_val in plist:  # Renamed p to p_val for clarity
-        for d_val in dlist:  # Changed from n to d_val, iterate over dlist
-            # T is fixed to 1, so get_BB_distance is no longer needed
+    print("plist =", plist)
+    print("dlist =", dlist)
+    print("decoder_prms =", decoder_prms)
+    print("norm_orders =", norm_orders)
+    print("noise_model =", noise_model)
+    print()
+    print(
+        f"\n==== Starting simulations up to {total_shots} shots in {data_dir_base} ===="
+    )
+    for p_val in plist:
+        for d_val in dlist:
             t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             simulate(
                 shots=total_shots,
-                p=p_val,  # Pass p_val
-                d=d_val,  # Pass d_val instead of n, T is removed
+                p=p_val,
+                d=d_val,
                 data_dir=data_dir,
                 n_jobs=19,
                 repeat=10,
                 max_shots_per_file=max_shots_per_file,
+                decoder_prms=decoder_prms,
+                norm_orders=norm_orders,
+                noise=noise_model,
             )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

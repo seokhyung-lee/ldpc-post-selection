@@ -9,7 +9,7 @@ import stim
 from joblib import Parallel, delayed
 
 from src.ldpc_post_selection.build_circuit import build_BB_circuit, get_BB_distance
-from src.ldpc_post_selection.decoder import BpLsdPsDecoder
+from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 
 
 def _convert_df_dtypes_for_feather(df: pd.DataFrame) -> pd.DataFrame:
@@ -18,7 +18,8 @@ def _convert_df_dtypes_for_feather(df: pd.DataFrame) -> pd.DataFrame:
 
     This function iterates through each column of the input DataFrame.
     If a column's data type is float, it's converted to `float32`.
-    If a column's data type is integer or boolean, it's converted to `int32`.
+    If a column's data type is integer, it's converted to `int32`.
+    Boolean columns are left as is.
     The modifications are performed in-place on the input DataFrame.
 
     Parameters
@@ -35,212 +36,328 @@ def _convert_df_dtypes_for_feather(df: pd.DataFrame) -> pd.DataFrame:
         col_dtype = df[col_name].dtype
         if pd.api.types.is_float_dtype(col_dtype):
             df[col_name] = df[col_name].astype(np.float32)
-        elif pd.api.types.is_integer_dtype(col_dtype):
+        elif pd.api.types.is_integer_dtype(col_dtype):  # Only handle integers here
             df[col_name] = df[col_name].astype(np.int32)
+        # Boolean columns are intentionally not handled here to keep their 'bool' dtype
     return df
 
 
-# def load_bb_circuit(p: float, n: int, T: int) -> stim.Circuit:
-#     """
-#     Load a Stim circuit from a file.
+def _get_optimal_uint_dtype(max_val: int) -> np.dtype:
+    """
+    Determines the smallest NumPy unsigned integer dtype that can hold max_val.
 
-#     The function searches for a .stim file in the 'circuits/bb_codes/' directory.
-#     The filename is expected to contain substrings matching "p={p}", "nkd=[[{n}",
-#     and "r={T}".
+    Parameters
+    ----------
+    max_val : int
+        The maximum possible value that the dtype needs to represent.
 
-#     Parameters
-#     ----------
-#     p : float
-#         Circuit-level error probability.
-#     n : int
-#         Number of qubits.
-#     T : int
-#         Number of rounds.
-
-#     Returns
-#     -------
-#     circuit : stim.Circuit
-#         The loaded Stim circuit object.
-
-#     Raises
-#     ------
-#     FileNotFoundError
-#         If no file matching the criteria is found in 'circuits/bb_codes/'.
-#     ValueError
-#         If multiple files matching the criteria are found.
-#     IOError
-#         If the 'circuits/bb_codes/' directory does not exist.
-#     """
-#     current_dir = os.path.dirname(os.path.abspath(__file__))
-#     circuits_dir = os.path.join(current_dir, "circuits/bb_codes")
-
-#     if not os.path.isdir(circuits_dir):
-#         raise IOError(
-#             f"Directory not found: {circuits_dir}. Ensure this path is correct relative to your execution directory or an absolute path."
-#         )
-
-#     found_files = []
-#     # Construct search patterns based on user's specifications
-#     pattern_p = f"p={p}"
-#     pattern_n = f"nkd=[[{n}"
-#     pattern_T = f"r={T}"
-#     pattern_c = "c=bivariate_bicycle_Z"
-
-#     for filename in os.listdir(circuits_dir):
-#         if (
-#             pattern_p in filename
-#             and pattern_n in filename
-#             and pattern_T in filename
-#             and pattern_c in filename
-#             and filename.endswith(".stim")
-#         ):
-#             found_files.append(filename)
-
-#     if not found_files:
-#         raise FileNotFoundError(
-#             f"No .stim file found in '{circuits_dir}' matching criteria: "
-#             f"p={p}, nkd=[[{n}, r={T}"
-#         )
-#     if len(found_files) > 1:
-#         raise ValueError(
-#             f"Multiple .stim files found in '{circuits_dir}' matching criteria: "
-#             f"p={p}, nkd=[[{n}, r={T}. Files: {found_files}"
-#         )
-
-#     circuit_file_path = os.path.join(circuits_dir, found_files[0])
-#     return stim.Circuit.from_file(circuit_file_path)
+    Returns
+    -------
+    dtype : numpy.dtype
+        The optimal NumPy unsigned integer dtype (np.uint16, np.uint32, or np.uint64).
+    """
+    if max_val < 2**16:
+        return np.uint16
+    elif max_val < 2**32:
+        return np.uint32
+    else:
+        return np.uint64
 
 
 def task(
     shots: int,
-    p: float,
-    n: int,
-    T: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict[str, float | int | bool]]]:
-    circuit = build_BB_circuit(p=p, n=n, T=T)
+    circuit: stim.Circuit,  # Changed: circuit is passed as an argument
+    decoder_prms: Dict[str, Any] | None = None,
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    List[Dict[str, float]],
+    List[np.ndarray],
+    List[np.ndarray],
+]:
+    """
+    Run a single simulation task for a given circuit and decoder parameters.
+
+    Parameters
+    ----------
+    shots : int
+        Number of shots to simulate.
+    circuit : stim.Circuit
+        The pre-built quantum error correction circuit.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the SoftOutputsBpLsdDecoder.
+
+    Returns
+    -------
+    fails : np.ndarray
+        Boolean array indicating if the LSD decoding failed for each shot.
+    fails_bp : np.ndarray
+        Boolean array indicating if the BP decoding failed for each shot.
+    converges : np.ndarray
+        Boolean array indicating if the BP algorithm converged for each shot.
+    scalar_soft_infos : list of dict
+        List of dictionaries, each containing scalar soft information like
+        'pred_llr' and 'detector_density' for each shot.
+    cluster_sizes_list : list of np.ndarray
+        List of 1D NumPy arrays, where each array contains the cluster sizes
+        for a single shot.
+    cluster_llrs_list : list of np.ndarray
+        List of 1D NumPy arrays, where each array contains the cluster LLRs
+        for a single shot.
+    """
+    # circuit = build_BB_circuit(p=p, n=n, T=T) # Removed: circuit is now an argument
     sampler = circuit.compile_detector_sampler()
     det, obs = sampler.sample(shots, separate_observables=True)
 
-    decoder = BpLsdPsDecoder(circuit=circuit)
+    if decoder_prms is None:
+        decoder_prms = {}
+
+    decoder = SoftOutputsBpLsdDecoder(
+        circuit=circuit,
+        **decoder_prms,
+    )
     preds_list = []
     preds_bp_list = []
-    converges = []
-    soft_infos = []
+    converges_list = []
+    scalar_soft_infos_list = []  # For pred_llr, detector_density
+    cluster_sizes_list = []  # For cluster_sizes arrays
+    cluster_llrs_list = []  # For cluster_llrs arrays
 
     for det_sng in det:
-        pred, pred_bp, converge, soft_info = decoder.decode(det_sng, norm_order=0.5)
+        pred, pred_bp, converge, soft_info = decoder.decode(
+            det_sng,
+        )
 
         preds_list.append(pred)
         preds_bp_list.append(pred_bp)
+        converges_list.append(converge)
 
-        converges.append(converge)
-        soft_infos.append(soft_info)
+        # Extract new soft outputs
+        scalar_soft_infos_list.append(
+            {
+                "pred_llr": soft_info.get("pred_llr"),
+                "detector_density": soft_info.get("detector_density"),
+            }
+        )
+        cluster_sizes_list.append(soft_info.get("cluster_sizes", np.array([])))
+        cluster_llrs_list.append(soft_info.get("cluster_llrs", np.array([])))
 
-    converges = np.array(converges)
+    converges_arr = np.array(converges_list)
 
-    preds_arr = np.array(preds_list)
-    preds_bp_arr = np.array(preds_bp_list)
+    preds_arr = (
+        np.array(preds_list)
+        if preds_list
+        else np.empty((0, circuit.num_detectors), dtype=bool)
+    )
+    preds_bp_arr = (
+        np.array(preds_bp_list)
+        if preds_bp_list
+        else np.empty((0, circuit.num_detectors), dtype=bool)
+    )
 
     obs_matrix_T = decoder.obs_matrix.T
-    obs_preds_arr = ((preds_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(bool)
-    obs_preds_bp_arr = ((preds_bp_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(bool)
+    if preds_arr.shape[0] > 0:
+        obs_preds_arr = ((preds_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(bool)
+        obs_preds_bp_arr = ((preds_bp_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(
+            bool
+        )
+        # Compare with the true logical observables 'obs'
+        fails_arr = np.any(obs ^ obs_preds_arr, axis=1)
+        fails_bp_arr = np.any(obs ^ obs_preds_bp_arr, axis=1)
+    else:  # Handle case with 0 shots
+        obs_shape = obs.shape[1] if obs.ndim > 1 else 0
+        fails_arr = np.empty(0, dtype=bool)
+        fails_bp_arr = np.empty(0, dtype=bool)
 
-    # Compare with the true logical observables 'obs'
-    fails = np.any(obs ^ obs_preds_arr, axis=1)
-    fails_bp = np.any(obs ^ obs_preds_bp_arr, axis=1)
-
-    return fails, fails_bp, converges, soft_infos
+    return (
+        fails_arr,
+        fails_bp_arr,
+        converges_arr,
+        scalar_soft_infos_list,
+        cluster_sizes_list,
+        cluster_llrs_list,
+    )
 
 
 def task_parallel(
-    shots: int, p: float, n: int, T: int, n_jobs: int, repeat: int = 10
-) -> pd.DataFrame:
+    shots: int,
+    circuit: stim.Circuit,  # Changed: circuit is passed
+    n_jobs: int,
+    repeat: int = 10,
+    decoder_prms: Dict[str, Any] | None = None,
+) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Run the BB `task` function in parallel and return results as a DataFrame.
+    Run the BB `task` function in parallel and return results including flattened arrays.
 
     Parameters
     ----------
     shots : int
         Total number of shots to simulate.
-    p : float
-        Error probability parameter.
-    n : int
-        Circuit parameter n.
-    T : int
-        Circuit parameter T.
+    circuit : stim.Circuit
+        The pre-built quantum error correction circuit.
     n_jobs : int
         Number of parallel jobs.
+    repeat : int
+        Number of repeats for parallel execution.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the decoder.
 
     Returns
     -------
     df : pandas.DataFrame
-        DataFrame containing the fail flag (0 or 1) and soft information for each sample.
+        DataFrame containing boolean flags (fail, fail_bp, converge) and scalar
+        float soft outputs (pred_llr, detector_density) for each sample.
+    flat_cluster_sizes : np.ndarray
+        1D NumPy array of all cluster sizes, flattened across all samples.
+    flat_cluster_llrs : np.ndarray
+        1D NumPy array of all cluster LLRs, flattened across all samples.
+    offsets : np.ndarray
+        1D NumPy array storing the starting indices for each sample's data in
+        the flattened `flat_cluster_sizes` and `flat_cluster_llrs` arrays.
+        The length of this array is (number of samples + 1).
     """
+    if shots == 0:  # Handle case with 0 shots
+        empty_df = pd.DataFrame(
+            columns=["fail", "fail_bp", "converge", "pred_llr", "detector_density"]
+        )
+        empty_df = _convert_df_dtypes_for_feather(
+            empty_df.copy()
+        )  # Ensure correct dtypes
+        return (
+            empty_df,
+            np.array([], dtype=int),
+            np.array([], dtype=float),
+            np.array([0], dtype=int),
+        )
+
     # Divide shots among jobs
     base = shots // (n_jobs * repeat)
     remainder = shots % (n_jobs * repeat)
     chunk_sizes = [base + (1 if i < remainder else 0) for i in range(n_jobs * repeat)]
+    # Filter out zero-sized chunks if any to prevent issues with task
+    chunk_sizes = [cs for cs in chunk_sizes if cs > 0]
+    if not chunk_sizes and shots > 0:  # Should not happen if shots > 0
+        warnings.warn("No chunks to run, though shots > 0. This is unexpected.")
+        empty_df = pd.DataFrame(
+            columns=["fail", "fail_bp", "converge", "pred_llr", "detector_density"]
+        )
+        empty_df = _convert_df_dtypes_for_feather(empty_df.copy())
+        return (
+            empty_df,
+            np.array([], dtype=int),
+            np.array([], dtype=float),
+            np.array([0], dtype=int),
+        )
 
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(
-        delayed(task)(shots=chunk, p=p, n=n, T=T) for chunk in chunk_sizes
+        delayed(task)(
+            shots=chunk,
+            circuit=circuit,  # Pass circuit
+            decoder_prms=decoder_prms,
+        )
+        for chunk in chunk_sizes
     )
 
     # Unpack and combine results
-    fails, fails_bp, converges, soft_infos = zip(*results)
-    fails = pd.Series(np.concatenate(fails), name="fail")
-    fails_bp = pd.Series(np.concatenate(fails_bp), name="fail_bp")
-    converges = pd.Series(np.concatenate(converges), name="converge")
-    soft_infos = [info for sublist in soft_infos for info in sublist]
+    (
+        fails_l,
+        fails_bp_l,
+        converges_l,
+        scalar_soft_infos_nested_l,
+        cs_nested_l,
+        cl_nested_l,
+    ) = zip(*results)
 
-    # Create DataFrame from soft information
-    df_soft = pd.DataFrame(soft_infos)
+    fails_s = pd.Series(np.concatenate(fails_l), name="fail", dtype=bool)
+    fails_bp_s = pd.Series(np.concatenate(fails_bp_l), name="fail_bp", dtype=bool)
+    converges_s = pd.Series(np.concatenate(converges_l), name="converge", dtype=bool)
+
+    scalar_soft_infos_flat_list = [
+        item for sublist in scalar_soft_infos_nested_l for item in sublist
+    ]
+    df_soft = pd.DataFrame(
+        scalar_soft_infos_flat_list
+    )  # Contains pred_llr, detector_density
 
     # Combine fail flag with soft info
-    df = pd.concat([fails, fails_bp, converges, df_soft], axis=1)
+    df = pd.concat([fails_s, fails_bp_s, converges_s, df_soft], axis=1)
 
-    return df
+    # Process cluster_sizes and cluster_llrs
+    cluster_sizes_list_flat = [item for sublist in cs_nested_l for item in sublist]
+    cluster_llrs_list_flat = [item for sublist in cl_nested_l for item in sublist]
+
+    if cluster_sizes_list_flat:
+        flat_cluster_sizes = np.concatenate(cluster_sizes_list_flat)
+    else:
+        flat_cluster_sizes = np.array([], dtype=int)
+
+    if cluster_llrs_list_flat:
+        flat_cluster_llrs = np.concatenate(cluster_llrs_list_flat)
+    else:
+        flat_cluster_llrs = np.array([], dtype=float)
+
+    lengths = [len(cs_arr) for cs_arr in cluster_sizes_list_flat]
+    offsets = np.cumsum([0] + lengths).astype(
+        np.int64
+    )  # Use int64 for cumsum, then cast later
+
+    return df, flat_cluster_sizes, flat_cluster_llrs, offsets
 
 
 def get_existing_shots(data_dir: str) -> Tuple[int, List[Tuple[int, str, int]]]:
     """
-    Calculate the total number of shots already saved in Feather files within a given directory.
+    Calculate the total number of shots already saved.
+
+    It looks for subdirectories named 'batch_{idx}' within data_dir.
+    Inside each 'batch_{idx}' directory, it expects 'scalars.feather'
+    and counts its rows.
 
     Parameters
     ----------
     data_dir : str
-        Directory containing the Feather files (e.g., "data/bb_circuit_iter30_minsum_lsd0/n72_T6_p0.002").
+        Directory for a specific configuration (e.g., "data/base_dir/n72_T6_p0.002").
 
     Returns
     -------
     total_existing : int
-        The total number of rows found across all 'data_*.feather' files.
+        The total number of rows (shots) found across all 'scalars.feather'
+        files in their respective 'batch_{idx}' subdirectories.
     existing_files_info : list of tuple
-        A list containing tuples of (index, file_path, row_count) for each existing file.
+        A list containing tuples of (batch_index, batch_directory_path, row_count)
+        for each existing batch directory that contains a readable 'scalars.feather'.
     """
     total_existing = 0
     idx = 1
     existing_files_info = []
     while True:
-        # Changed filename pattern to data_{idx}.feather
-        fp = os.path.join(data_dir, f"data_{idx}.feather")
-        if not os.path.exists(fp):
-            break
-        try:
-            # Read file to count rows. Optimization note: This reads the whole file.
-            # For very large files, reading only metadata (if possible) or storing
-            # row counts separately could be faster.
-            data = pd.read_feather(fp)
-            rows = len(data)
-            del data  # Free memory
-        except Exception as e:
-            warnings.warn(
-                f"Could not read or get row count for {fp}: {e}. Assuming 0 rows."
-            )
-            rows = 0
+        batch_subdir_path = os.path.join(data_dir, f"batch_{idx}")
+        if not os.path.isdir(batch_subdir_path):
+            break  # No more batch_{idx} directories
+
+        fp_feather = os.path.join(batch_subdir_path, "scalars.feather")
+        rows = 0
+        if os.path.exists(fp_feather):
+            try:
+                data = pd.read_feather(fp_feather)
+                rows = len(data)
+                del data  # Free memory
+            except Exception as e:
+                warnings.warn(
+                    f"Could not read or get row count for {fp_feather}: {e}. Assuming 0 rows."
+                )
+                rows = 0
+        else:
+            # If scalars.feather doesn't exist, this batch might be incomplete or not started
+            # We'll still note the directory if we want to resume into it,
+            # but it contributes 0 to existing shots for now.
+            pass  # rows is already 0
+
         total_existing += rows
-        if rows > 0:  # Store info only if file could be read and has rows
-            existing_files_info.append((idx, fp, rows))
+        # Store info even if rows is 0, as the batch directory exists.
+        # The next_idx logic depends on the highest existing batch directory index.
+        existing_files_info.append((idx, batch_subdir_path, rows))
         idx += 1
     return total_existing, existing_files_info
 
@@ -253,47 +370,47 @@ def simulate(
     data_dir: str,
     n_jobs: int,
     repeat: int,
-    max_shots_per_file: int = 1_000_000,
+    shots_per_batch: int = 1_000_000,
+    decoder_prms: Dict[str, Any] | None = None,
 ) -> None:
     """
-    Run the simulation for a given (p, n) using Feather files and handle file I/O,
-    storing results in subdirectories based on parameters.
+    Run the simulation for a given (p, n, T) configuration, saving results in batches.
+    Results include a Feather file for scalar data and NumPy files for ragged arrays.
 
     Parameters
     ----------
     shots : int
-        Total number of shots to simulate.
+        Total number of shots to simulate for this configuration.
     p : float
-        Error probability parameter.
+        Physical error probability.
     n : int
         Number of qubits.
     T : int
         Number of rounds.
     data_dir : str
-        Base directory to store output subdirectories (e.g., "data/bb_circuit_iter30_minsum_lsd0").
+        Base directory to store output subdirectories.
     n_jobs : int
-        Number of parallel jobs.
+        Number of parallel jobs for `task_parallel`.
     repeat : int
-        Number of repeats for parallel execution.
-    max_shots_per_file : int
-        Maximum number of shots per file.
+        Number of repeats for `task_parallel`.
+    shots_per_batch : int
+        Number of shots to simulate and save per batch file.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the SoftOutputsBpLsdDecoder.
 
     Returns
     -------
     None
-        This function writes results to Feather files and prints status messages.
+        This function writes results to files and prints status messages.
     """
     # Create subdirectory path based on parameters
     sub_dirname = f"n{n}_T{T}_p{p}"
     sub_data_dir = os.path.join(data_dir, sub_dirname)
-    os.makedirs(
-        sub_data_dir, exist_ok=True
-    )  # Create the subdirectory if it doesn't exist
+    os.makedirs(sub_data_dir, exist_ok=True)
 
     # Count existing files and rows within the specific subdirectory
-    total_existing, existing_files = get_existing_shots(sub_data_dir)
+    total_existing, existing_files_info = get_existing_shots(sub_data_dir)
 
-    # Skip if already simulated enough
     if total_existing >= shots:
         print(
             f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}, T={T} in {sub_dirname}."
@@ -305,60 +422,71 @@ def simulate(
         f"\nNeed to simulate {remaining} more shots for p={p}, n={n}, T={T} into {sub_dirname}"
     )
 
-    # Append to existing files up to capacity within the subdirectory
-    for idx, fp, rows in existing_files:
-        if remaining <= 0:
-            break
-        if rows < max_shots_per_file:
-            to_run = min(max_shots_per_file - rows, remaining)
-            t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            fname = os.path.basename(fp)  # fname will be "data_{idx}.feather"
-            print(
-                f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, T={T}, appending to {sub_dirname}/{fname}"
-            )
-            # Load existing data only when appending
-            try:
-                df_existing = pd.read_feather(fp)
-            except Exception as e:
-                warnings.warn(
-                    f"Could not read {fp} for appending: {e}. Starting from new shots for this file."
-                )
-                df_existing = pd.DataFrame()  # Start fresh for this file if read fails
-            df_new = task_parallel(to_run, p, n, T, n_jobs=n_jobs, repeat=repeat)
-            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-            df_combined = _convert_df_dtypes_for_feather(df_combined)
-            df_combined.to_feather(fp)
-            remaining -= to_run
-            print(
-                f"   Appended {to_run} shots. {remaining} shots remaining for this config."
-            )
+    # Create the circuit once for this (p, n, T) configuration
+    circuit = build_BB_circuit(p=p, n=n, T=T)
+    dem = circuit.detector_error_model()
 
-    # Create new numbered files within the subdirectory for any remaining shots
-    # Start indexing from the next available index after existing files
+    # Determine dtypes for NumPy arrays using the helper function
+    cluster_size_dtype = _get_optimal_uint_dtype(dem.num_errors)
+    offset_dtype = _get_optimal_uint_dtype(dem.num_errors * shots_per_batch)
+
+    # Determine the next file index
     next_idx = (
-        max([info[0] for info in existing_files], default=0) + 1
-        if existing_files
+        max([info[0] for info in existing_files_info], default=0) + 1
+        if existing_files_info
         else 1
     )
+
+    # Simulate and save in batches
+    current_simulated_for_config = 0
     while remaining > 0:
-        to_run = min(max_shots_per_file, remaining)
-        # Use the new filename pattern "data_{idx}.feather" within the subdirectory
-        fp_new = os.path.join(sub_data_dir, f"data_{next_idx}.feather")
-        t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        fname_new = os.path.basename(
-            fp_new
-        )  # fname_new will be "data_{next_idx}.feather"
+        to_run = min(shots_per_batch, remaining)
+        if to_run == 0:
+            break  # Should not happen if remaining > 0
+
+        # Define the specific directory for this batch's output
+        batch_output_dir = os.path.join(sub_data_dir, f"batch_{next_idx}")
+        os.makedirs(batch_output_dir, exist_ok=True)
+
+        t0_batch = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"\n[{t0}] Simulating {to_run} shots for p={p}, n={n}, T={T}, creating {sub_dirname}/{fname_new}"
+            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, n={n}, T={T}. Output to: {batch_output_dir}"
         )
-        df_new = task_parallel(to_run, p, n, T, n_jobs=n_jobs, repeat=repeat)
-        df_new = _convert_df_dtypes_for_feather(df_new)
-        df_new.to_feather(fp_new)
+
+        df_new, flat_cluster_sizes, flat_cluster_llrs, offsets = task_parallel(
+            shots=to_run,
+            circuit=circuit,  # Pass the pre-built circuit
+            n_jobs=n_jobs,
+            repeat=repeat,
+            decoder_prms=decoder_prms,
+        )
+
+        # Prepare filenames for this batch (now with fixed names within batch_output_dir)
+        fp_feather = os.path.join(batch_output_dir, "scalars.feather")
+        fp_cs = os.path.join(batch_output_dir, "cluster_sizes.npy")
+        fp_cl = os.path.join(batch_output_dir, "cluster_llrs.npy")
+        fp_offsets = os.path.join(batch_output_dir, "offsets.npy")
+
+        # Convert dtypes and save
+        df_new = _convert_df_dtypes_for_feather(
+            df_new.copy()
+        )  # Use .copy() to avoid SettingWithCopyWarning
+        df_new.to_feather(fp_feather)
+
+        np.save(fp_cs, flat_cluster_sizes.astype(cluster_size_dtype))
+        np.save(fp_cl, flat_cluster_llrs.astype(np.float32))
+        np.save(fp_offsets, offsets.astype(offset_dtype))
+
+        current_simulated_for_config += to_run
         remaining -= to_run
-        next_idx += 1
+        total_processed_for_config = current_simulated_for_config  # Corrected logic
+
         print(
-            f"   Created file with {to_run} shots. {remaining} shots remaining for this config."
+            f"   Created files in {batch_output_dir} with {to_run} shots. "
+            f"{total_processed_for_config} / {shots - total_existing} new shots processed for this config. "
+            f"{remaining} shots still remaining for this config."
         )
+        next_idx += 1
 
 
 if __name__ == "__main__":
@@ -368,35 +496,47 @@ if __name__ == "__main__":
     )
 
     plist = [1e-3, 3e-3, 5e-3]
-    nlist = [144]  # [72, 108, 144, 288]
+    n = 144  # [72, 108, 144, 288]
 
-    max_shots_per_file = round(5e6)
-    total_shots = round(1e8)
+    # Changed from a list to a single value for shots_per_batch configuration
+    shots_per_batch = [round(5e6), round(2e6), round(5e5)]
+    total_shots = round(1e7)
 
     # Estimated time (20 cores):
     # p=1e-3, n=144: 100,000 shots/min
     # p=3e-3, n=144: 50,000 shots/min
     # p=5e-3, n=144: 12,500 shots/min
 
+    decoder_prms = {
+        "max_iter": 30,
+        "bp_method": "minimum_sum",
+        "lsd_method": "LSD_0",
+        "lsd_order": 0,
+    }
+
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "data/bb_circuit_iter30_minsum_lsd0")
+    data_dir = os.path.join(current_dir, "data/bb_minsum_iter30_lsd0")
     os.makedirs(data_dir, exist_ok=True)
 
+    print("n =", n)
+    print("plist =", plist)
+    print("decoder_prms =", decoder_prms)
+
     print(f"\n==== Starting simulations up to {total_shots} shots ====")
-    for p in plist:
-        for n in nlist:
-            T = get_BB_distance(n)
-            t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            simulate(
-                shots=total_shots,
-                p=p,
-                n=n,
-                T=T,
-                data_dir=data_dir,
-                n_jobs=20,
-                repeat=10,
-                max_shots_per_file=max_shots_per_file,
-            )
+    for i_p, p in enumerate(plist):
+        shots_per_batch_now = shots_per_batch[i_p]
+        T = get_BB_distance(n)
+        simulate(
+            shots=total_shots,
+            p=p,
+            n=n,
+            T=T,
+            data_dir=data_dir,
+            n_jobs=19,
+            repeat=10,
+            shots_per_batch=shots_per_batch_now,
+            decoder_prms=decoder_prms,
+        )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==== Simulations completed ({t0}) ====")

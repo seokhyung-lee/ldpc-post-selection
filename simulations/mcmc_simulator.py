@@ -9,7 +9,7 @@ import stim
 from scipy.sparse import csc_matrix
 from statsmodels.stats.proportion import proportion_confint
 
-from ..src.ldpc_post_selection.decoder import BpLsdPsDecoder
+from ..src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 from ..src.ldpc_post_selection.stim_tools import dem_to_parity_check
 
 
@@ -19,7 +19,7 @@ class BpLsdPsMCMCSimulator:
     obs: csc_matrix
     p: np.ndarray
     bplsd_prms: Dict[str, Any]
-    decoder: BpLsdPsDecoder
+    decoder: SoftOutputsBpLsdDecoder
     e0: Optional[np.ndarray]
     last_error: Optional[np.ndarray]
     _fails: List[Optional[bool]]
@@ -110,7 +110,7 @@ class BpLsdPsMCMCSimulator:
             "lsd_order": lsd_order,
         }
 
-        self.decoder = BpLsdPsDecoder(H, p, **self.bplsd_prms)
+        self.decoder = SoftOutputsBpLsdDecoder(H, p, **self.bplsd_prms)
 
         if _force_no_e0:
             e0 = fail = None
@@ -447,7 +447,7 @@ class BpLsdPsMCMCSimulator:
         if "time" not in state:
             state["time"] = []
         self.__dict__.update(state)
-        self.decoder = BpLsdPsDecoder(self.H, self.p, **self.bplsd_prms)
+        self.decoder = SoftOutputsBpLsdDecoder(self.H, self.p, **self.bplsd_prms)
 
     def save(self, path: str):
         """
