@@ -211,370 +211,313 @@ def calculate_df_agg_for_combination(
             f"'norm_order' must be a positive float when 'by' is '{by}'. Got: {norm_order}"
         )
 
-    try:
-        batch_dir_paths = find_bb_simulation_files(
-            n=n, T=T, p=p, data_dir=data_dir, verbose=verbose
+    batch_dir_paths = find_bb_simulation_files(
+        n=n, T=T, p=p, data_dir=data_dir, verbose=verbose
+    )
+    # find_bb_simulation_files raises error if no dirs, so this check is mostly a safeguard.
+    if not batch_dir_paths:
+        print(
+            f"Warning: No valid batch directories found for n={n}, T={T}, p={p} by find_bb_simulation_files. Skipping."
         )
-        # find_bb_simulation_files raises error if no dirs, so this check is mostly a safeguard.
-        if not batch_dir_paths:
+        return pd.DataFrame(), 0
+
+    # --- Determine value range (min_val, max_val) --- (First Pass)
+    actual_min_val: float
+    actual_max_val: float
+
+    if min_value_override is not None and max_value_override is not None:
+        if min_value_override >= max_value_override:
+            raise ValueError("min_value_override must be less than max_value_override.")
+        actual_min_val = min_value_override
+        actual_max_val = max_value_override
+        if verbose:
             print(
-                f"Warning: No valid batch directories found for n={n}, T={T}, p={p} by find_bb_simulation_files. Skipping."
+                f"  Using user-specified value range for {by}: [{actual_min_val}, {actual_max_val}]"
+            )
+    else:
+        if verbose:
+            print(
+                f"  Auto-detecting value range for {by} (first pass over batch directories)..."
+            )
+        current_min_val = np.inf
+        current_max_val = -np.inf
+        found_any_valid_value_for_range = False
+
+        for batch_dir_pass1 in tqdm(batch_dir_paths, desc="Range detection"):
+            # For range detection, we don't need to keep df_scalars_loaded
+            temp_series_to_bin, _ = _get_values_for_binning_from_batch(
+                batch_dir_path=batch_dir_pass1,
+                by=by,
+                norm_order=norm_order,
+                verbose=verbose
+                > 1,  # More verbose logging inside helper for pass 1 if main verbose is high
+            )
+
+            if temp_series_to_bin is not None and not temp_series_to_bin.empty:
+                temp_series_to_bin_cleaned = temp_series_to_bin.dropna()
+                if not temp_series_to_bin_cleaned.empty:
+                    found_any_valid_value_for_range = True
+                    current_min_val = min(
+                        current_min_val, temp_series_to_bin_cleaned.min()
+                    )
+                    current_max_val = max(
+                        current_max_val, temp_series_to_bin_cleaned.max()
+                    )
+                del temp_series_to_bin_cleaned
+            if temp_series_to_bin is not None:
+                del temp_series_to_bin
+
+        if not found_any_valid_value_for_range:
+            print(
+                f"Warning: No valid data found for {by} for n={n}, T={T}, p={p} during range detection. Skipping."
             )
             return pd.DataFrame(), 0
 
-        # --- Determine value range (min_val, max_val) --- (First Pass)
-        actual_min_val: float
-        actual_max_val: float
+        actual_min_val = current_min_val
+        actual_max_val = current_max_val
 
-        if min_value_override is not None and max_value_override is not None:
-            if min_value_override >= max_value_override:
-                raise ValueError(
-                    "min_value_override must be less than max_value_override."
-                )
-            actual_min_val = min_value_override
-            actual_max_val = max_value_override
-            if verbose:
-                print(
-                    f"  Using user-specified value range for {by}: [{actual_min_val}, {actual_max_val}]"
-                )
-        else:
-            if verbose:
-                print(
-                    f"  Auto-detecting value range for {by} (first pass over batch directories)..."
-                )
-            current_min_val = np.inf
-            current_max_val = -np.inf
-            found_any_valid_value_for_range = False
-
-            for batch_dir_pass1 in tqdm(batch_dir_paths, desc="Range detection"):
-                try:
-                    # For range detection, we don't need to keep df_scalars_loaded
-                    temp_series_to_bin, _ = _get_values_for_binning_from_batch(
-                        batch_dir_path=batch_dir_pass1,
-                        by=by,
-                        norm_order=norm_order,
-                        verbose=verbose
-                        > 1,  # More verbose logging inside helper for pass 1 if main verbose is high
-                    )
-
-                    if temp_series_to_bin is not None and not temp_series_to_bin.empty:
-                        temp_series_to_bin_cleaned = temp_series_to_bin.dropna()
-                        if not temp_series_to_bin_cleaned.empty:
-                            found_any_valid_value_for_range = True
-                            current_min_val = min(
-                                current_min_val, temp_series_to_bin_cleaned.min()
-                            )
-                            current_max_val = max(
-                                current_max_val, temp_series_to_bin_cleaned.max()
-                            )
-                        del temp_series_to_bin_cleaned
-                    if temp_series_to_bin is not None:
-                        del temp_series_to_bin
-
-                except Exception as e_pass1:
-                    # _get_values_for_binning_from_batch should handle its own internal errors mostly
-                    print(
-                        f"Warning: Error during range detection for batch {os.path.basename(batch_dir_pass1)} (outer loop): {e_pass1}"
-                    )
-
-            if not found_any_valid_value_for_range:
-                print(
-                    f"Warning: No valid data found for {by} for n={n}, T={T}, p={p} during range detection. Skipping."
-                )
-                return pd.DataFrame(), 0
-
-            actual_min_val = current_min_val
-            actual_max_val = current_max_val
-
-            if np.isclose(actual_min_val, actual_max_val):
-                adjustment = (
-                    max(1.0, abs(actual_min_val * 0.1)) if actual_min_val != 0 else 1.0
-                )
-                actual_max_val = actual_min_val + adjustment
-                actual_min_val = actual_min_val - adjustment
-                if actual_max_val == actual_min_val and num_hist_bins > 1:
-                    actual_max_val = actual_min_val + (
-                        num_hist_bins * np.finfo(float).eps
-                    )
-                if verbose:
-                    print(
-                        f"  Detected min_value ~ max_value. Adjusted range for {by}: [{actual_min_val}, {actual_max_val}]"
-                    )
-            elif actual_max_val < actual_min_val:
-                actual_max_val = actual_min_val
-
-            if verbose:
-                print(
-                    f"  Auto-detected value range for {by}: [{actual_min_val}, {actual_max_val}]"
-                )
-        # --- End Determine value range ---
-
-        if not isinstance(num_hist_bins, int) or num_hist_bins < 1:
-            raise ValueError("num_hist_bins must be a positive integer.")
-
-        if actual_max_val < actual_min_val:
-            print(
-                f"Warning: Final max_value ({actual_max_val}) < min_value ({actual_min_val}). Setting max_value = min_value."
+        if np.isclose(actual_min_val, actual_max_val):
+            adjustment = (
+                max(1.0, abs(actual_min_val * 0.1)) if actual_min_val != 0 else 1.0
             )
+            actual_max_val = actual_min_val + adjustment
+            actual_min_val = actual_min_val - adjustment
+            if actual_max_val == actual_min_val and num_hist_bins > 1:
+                actual_max_val = actual_min_val + (num_hist_bins * np.finfo(float).eps)
+            if verbose:
+                print(
+                    f"  Detected min_value ~ max_value. Adjusted range for {by}: [{actual_min_val}, {actual_max_val}]"
+                )
+        elif actual_max_val < actual_min_val:
             actual_max_val = actual_min_val
 
-        if actual_min_val == actual_max_val and num_hist_bins > 1:
+        if verbose:
+            print(
+                f"  Auto-detected value range for {by}: [{actual_min_val}, {actual_max_val}]"
+            )
+    # --- End Determine value range ---
+
+    if not isinstance(num_hist_bins, int) or num_hist_bins < 1:
+        raise ValueError("num_hist_bins must be a positive integer.")
+
+    if actual_max_val < actual_min_val:
+        print(
+            f"Warning: Final max_value ({actual_max_val}) < min_value ({actual_min_val}). Setting max_value = min_value."
+        )
+        actual_max_val = actual_min_val
+
+    if actual_min_val == actual_max_val and num_hist_bins > 1:
+        if verbose:
+            print(
+                f"Warning: Cannot create {num_hist_bins} distinct bins for {by} as min_value ({actual_min_val}) == max_value ({actual_max_val}). Adjusting to 1 bin."
+            )
+        num_hist_bins = 1
+
+    bin_edges = np.linspace(actual_min_val, actual_max_val, num_hist_bins + 1)
+    if not np.all(np.diff(bin_edges) >= 0) and len(bin_edges) > 1:
+        if num_hist_bins == 1:  # If only one bin, [val, val] is fine for edges
+            bin_edges = np.array([actual_min_val, actual_max_val])
+            if bin_edges[0] > bin_edges[1]:
+                bin_edges[1] = bin_edges[0]  # ensure min <= max
+        else:
+            raise ValueError(
+                f"  Error: Could not create monotonic bins for num_hist_bins={num_hist_bins} with range [{actual_min_val}, {actual_max_val}]. Edges: {bin_edges}. Returning empty."
+            )
+
+    total_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    fail_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    fail_converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    total_rows_processed = 0  # Counts actual binned entries
+    total_samples_considered = (
+        0  # Counts samples from scalars.feather that were processed
+    )
+
+    total_read_time = 0.0
+    total_calc_value_time = 0.0
+    total_hist_time = 0.0
+
+    if verbose:
+        print(
+            f"Processing {len(batch_dir_paths)} batch directories iteratively (Numba histograms)..."
+        )
+
+    for batch_dir in tqdm(batch_dir_paths, desc="Aggregation"):
+        start_time_read = (
+            time.perf_counter()
+        )  # Time only for this specific batch read + initial processing
+
+        # In main pass, df_scalars is loaded by/returned from the helper
+        series_to_bin, df_scalars = _get_values_for_binning_from_batch(
+            batch_dir_path=batch_dir,
+            by=by,
+            norm_order=norm_order,
+            verbose=verbose > 1,
+        )
+        read_and_initial_calc_time = time.perf_counter() - start_time_read
+        total_read_time += read_and_initial_calc_time  # This now includes some of the calc time from helper
+        # For simplicity, not splitting out precisely here.
+
+        if series_to_bin is None or df_scalars is None or df_scalars.empty:
             if verbose:
                 print(
-                    f"Warning: Cannot create {num_hist_bins} distinct bins for {by} as min_value ({actual_min_val}) == max_value ({actual_max_val}). Adjusting to 1 bin."
+                    f"  Skipping batch {os.path.basename(batch_dir)} due to issues from _get_values_for_binning (series or scalars missing/empty)."
                 )
-            num_hist_bins = 1
+            continue
 
-        bin_edges = np.linspace(actual_min_val, actual_max_val, num_hist_bins + 1)
-        if not np.all(np.diff(bin_edges) >= 0) and len(bin_edges) > 1:
-            if num_hist_bins == 1:  # If only one bin, [val, val] is fine for edges
-                bin_edges = np.array([actual_min_val, actual_max_val])
-                if bin_edges[0] > bin_edges[1]:
-                    bin_edges[1] = bin_edges[0]  # ensure min <= max
-            else:
+        total_samples_considered += len(df_scalars)
+
+        required_scalar_cols = ["fail", "converge", "fail_bp"]
+        if not all(col in df_scalars.columns for col in required_scalar_cols):
+            if verbose:
                 print(
-                    f"  Error: Could not create monotonic bins for num_hist_bins={num_hist_bins} with range [{actual_min_val}, {actual_max_val}]. Edges: {bin_edges}. Returning empty."
+                    f"  Skipping {os.path.basename(batch_dir)} due to missing fail/converge/fail_bp columns in scalars.feather."
                 )
-                return pd.DataFrame(), 0
+            continue
 
-        total_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
-        fail_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
-        converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
-        fail_converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
-        total_rows_processed = 0  # Counts actual binned entries
-        total_samples_considered = (
-            0  # Counts samples from scalars.feather that were processed
+        start_time_calc_downstream = time.perf_counter()
+        series_to_bin_cleaned = series_to_bin.dropna()
+        calc_value_time_batch_downstream = (
+            time.perf_counter() - start_time_calc_downstream
+        )
+        total_calc_value_time += calc_value_time_batch_downstream  # Time for dropna and any subsequent ops on series
+
+        if series_to_bin_cleaned.empty:
+            if verbose:
+                print(
+                    f"  No valid (non-NaN) data to bin for 'by={by}' in {os.path.basename(batch_dir)} after dropna. Skipping."
+                )
+            continue
+
+        total_rows_processed += len(
+            series_to_bin_cleaned
+        )  # Count actual entries that will be binned
+
+        if min_value_override is not None and max_value_override is not None:
+            values_np_check = series_to_bin_cleaned.to_numpy()
+            if np.any(values_np_check < min_value_override) or np.any(
+                values_np_check > max_value_override
+            ):
+                # Error if values are outside user-defined hard boundaries
+                raise ValueError(
+                    f"Data found outside user-specified value range "
+                    f"[{min_value_override}, {max_value_override}]. "
+                    f"Aggregation method: {by}, Batch: {os.path.basename(batch_dir)}"
+                )
+
+        start_time_hist = time.perf_counter()
+        values_np = series_to_bin_cleaned.to_numpy()
+        # Align masks with the cleaned series index
+        fail_mask = df_scalars.loc[series_to_bin_cleaned.index, "fail"].to_numpy(
+            dtype=bool
+        )
+        converge_mask = df_scalars.loc[
+            series_to_bin_cleaned.index, "converge"
+        ].to_numpy(dtype=bool)
+        fail_bp_mask = df_scalars.loc[series_to_bin_cleaned.index, "fail_bp"].to_numpy(
+            dtype=bool
         )
 
-        # if verbose:
-        #     print("Pre-compiling Numba histogram function...")
-        # try:
-        #     _calculate_histograms_numba(
-        #         np.array([actual_min_val], dtype=np.float64),
-        #         np.array([True], dtype=bool),
-        #         bin_edges,
-        #         np.zeros(num_hist_bins, dtype=np.int64),
-        #         np.zeros(num_hist_bins, dtype=np.int64),
-        #         np.array([True], dtype=bool),
-        #         np.zeros(num_hist_bins, dtype=np.int64),
-        #         np.zeros(num_hist_bins, dtype=np.int64),
-        #         np.array([True], dtype=bool),
-        #     )
-        #     if verbose:
-        #         print("Numba function pre-compiled.")
-        # except Exception as e_numba_compile:
-        #     print(
-        #         f"Warning: Numba pre-compilation failed: {e_numba_compile}. Proceeding without pre-compilation."
-        #     )
+        (
+            total_counts_hist,
+            fail_counts_hist,
+            converge_counts_hist,
+            fail_converge_counts_hist,
+        ) = _calculate_histograms_numba(
+            values_np,
+            fail_mask,
+            bin_edges,
+            total_counts_hist,
+            fail_counts_hist,
+            converge_mask,
+            converge_counts_hist,
+            fail_converge_counts_hist,
+            fail_bp_mask,
+        )
 
-        total_read_time = 0.0
-        total_calc_value_time = 0.0
-        total_hist_time = 0.0
+        hist_time_batch = time.perf_counter() - start_time_hist
+        total_hist_time += hist_time_batch
 
-        if verbose:
-            print(
-                f"Processing {len(batch_dir_paths)} batch directories iteratively (Numba histograms)..."
-            )
+        del (
+            series_to_bin,
+            df_scalars,
+            series_to_bin_cleaned,
+            values_np,
+            fail_mask,
+            converge_mask,
+            fail_bp_mask,
+        )
 
-        for batch_dir in tqdm(batch_dir_paths, desc="Aggregation"):
-            batch_processing_error = False
-            try:
-                start_time_read = (
-                    time.perf_counter()
-                )  # Time only for this specific batch read + initial processing
+        # Optional: if a batch error occurs, decide if you want to continue or stop
+        # if batch_processing_error: continue # or break, or raise
 
-                # In main pass, df_scalars is loaded by/returned from the helper
-                series_to_bin, df_scalars = _get_values_for_binning_from_batch(
-                    batch_dir_path=batch_dir,
-                    by=by,
-                    norm_order=norm_order,
-                    verbose=verbose > 1,
-                )
-                read_and_initial_calc_time = time.perf_counter() - start_time_read
-                total_read_time += read_and_initial_calc_time  # This now includes some of the calc time from helper
-                # For simplicity, not splitting out precisely here.
+    gc.collect()
 
-                if series_to_bin is None or df_scalars is None or df_scalars.empty:
-                    if verbose:
-                        print(
-                            f"  Skipping batch {os.path.basename(batch_dir)} due to issues from _get_values_for_binning (series or scalars missing/empty)."
-                        )
-                    continue
+    if verbose:
+        print("--- Benchmarking Results ---")
+        print(
+            f"Total samples considered from scalars.feather: {total_samples_considered}"
+        )
+        print(f"Total valid entries binned: {total_rows_processed}")
+        print(
+            f"Total time reading & initial processing per batch: {total_read_time:.4f} seconds"
+        )
+        print(
+            f"Total time for downstream calculations on series (e.g., dropna): {total_calc_value_time:.4f} seconds"
+        )
+        print(f"Total time calculating histograms: {total_hist_time:.4f} seconds")
+        print("----------------------------")
 
-                total_samples_considered += len(df_scalars)
+    if total_rows_processed == 0:
+        # This means no data points were actually binned across all batches.
+        print(
+            f"Warning: Processed 0 valid entries to bin for n={n}, T={T}, p={p} using aggregation method {by}. Output df_agg will be empty."
+        )
+        # Do not return early if total_samples_considered > 0 but total_rows_processed == 0.
+        # An empty df_agg is a valid result if no data fell into bins or all was NaN.
+        # Only return early if find_bb_simulation_files found nothing or range detection failed critically.
 
-                required_scalar_cols = ["fail", "converge", "fail_bp"]
-                if not all(col in df_scalars.columns for col in required_scalar_cols):
-                    if verbose:
-                        print(
-                            f"  Skipping {os.path.basename(batch_dir)} due to missing fail/converge/fail_bp columns in scalars.feather."
-                        )
-                    continue
+    binned_value_column_name = by
 
-                start_time_calc_downstream = time.perf_counter()
-                series_to_bin_cleaned = series_to_bin.dropna()
-                calc_value_time_batch_downstream = (
-                    time.perf_counter() - start_time_calc_downstream
-                )
-                total_calc_value_time += calc_value_time_batch_downstream  # Time for dropna and any subsequent ops on series
+    if ascending_confidence:
+        binned_values_for_df = bin_edges[:-1]
+    else:
+        binned_values_for_df = bin_edges[1:]
 
-                if series_to_bin_cleaned.empty:
-                    if verbose:
-                        print(
-                            f"  No valid (non-NaN) data to bin for 'by={by}' in {os.path.basename(batch_dir)} after dropna. Skipping."
-                        )
-                    continue
-
-                total_rows_processed += len(
-                    series_to_bin_cleaned
-                )  # Count actual entries that will be binned
-
-                if min_value_override is not None and max_value_override is not None:
-                    values_np_check = series_to_bin_cleaned.to_numpy()
-                    if np.any(values_np_check < min_value_override) or np.any(
-                        values_np_check > max_value_override
-                    ):
-                        # Error if values are outside user-defined hard boundaries
-                        raise ValueError(
-                            f"Data found outside user-specified value range "
-                            f"[{min_value_override}, {max_value_override}]. "
-                            f"Aggregation method: {by}, Batch: {os.path.basename(batch_dir)}"
-                        )
-
-                start_time_hist = time.perf_counter()
-                values_np = series_to_bin_cleaned.to_numpy()
-                # Align masks with the cleaned series index
-                fail_mask = df_scalars.loc[
-                    series_to_bin_cleaned.index, "fail"
-                ].to_numpy(dtype=bool)
-                converge_mask = df_scalars.loc[
-                    series_to_bin_cleaned.index, "converge"
-                ].to_numpy(dtype=bool)
-                fail_bp_mask = df_scalars.loc[
-                    series_to_bin_cleaned.index, "fail_bp"
-                ].to_numpy(dtype=bool)
-
-                (
-                    total_counts_hist,
-                    fail_counts_hist,
-                    converge_counts_hist,
-                    fail_converge_counts_hist,
-                ) = _calculate_histograms_numba(
-                    values_np,
-                    fail_mask,
-                    bin_edges,
-                    total_counts_hist,
-                    fail_counts_hist,
-                    converge_mask,
-                    converge_counts_hist,
-                    fail_converge_counts_hist,
-                    fail_bp_mask,
-                )
-
-                hist_time_batch = time.perf_counter() - start_time_hist
-                total_hist_time += hist_time_batch
-
-                del (
-                    series_to_bin,
-                    df_scalars,
-                    series_to_bin_cleaned,
-                    values_np,
-                    fail_mask,
-                    converge_mask,
-                    fail_bp_mask,
-                )
-
-            except Exception as e_batch:
-                print(
-                    f"Warning: Error processing batch {os.path.basename(batch_dir)}: {e_batch}"
-                )
-                batch_processing_error = True  # Mark error for this batch
-
-            # Optional: if a batch error occurs, decide if you want to continue or stop
-            # if batch_processing_error: continue # or break, or raise
-
-        gc.collect()
-
-        if verbose:
-            print("--- Benchmarking Results ---")
-            print(
-                f"Total samples considered from scalars.feather: {total_samples_considered}"
-            )
-            print(f"Total valid entries binned: {total_rows_processed}")
-            print(
-                f"Total time reading & initial processing per batch: {total_read_time:.4f} seconds"
-            )
-            print(
-                f"Total time for downstream calculations on series (e.g., dropna): {total_calc_value_time:.4f} seconds"
-            )
-            print(f"Total time calculating histograms: {total_hist_time:.4f} seconds")
-            print("----------------------------")
-
-        if total_rows_processed == 0:
-            # This means no data points were actually binned across all batches.
-            print(
-                f"Warning: Processed 0 valid entries to bin for n={n}, T={T}, p={p} using aggregation method {by}. Output df_agg will be empty."
-            )
-            # Do not return early if total_samples_considered > 0 but total_rows_processed == 0.
-            # An empty df_agg is a valid result if no data fell into bins or all was NaN.
-            # Only return early if find_bb_simulation_files found nothing or range detection failed critically.
-
-        binned_value_column_name = by
-
-        if ascending_confidence:
-            binned_values_for_df = bin_edges[:-1]
+    if len(binned_values_for_df) != num_hist_bins:
+        if num_hist_bins == 1 and len(total_counts_hist) == 1:
+            if ascending_confidence:
+                binned_values_for_df = np.array([bin_edges[0]])
+            else:
+                binned_values_for_df = np.array(
+                    [bin_edges[len(bin_edges) - 1]]
+                )  # Use actual last edge for 1 bin
         else:
-            binned_values_for_df = bin_edges[1:]
-
-        if len(binned_values_for_df) != num_hist_bins:
-            if num_hist_bins == 1 and len(total_counts_hist) == 1:
-                if ascending_confidence:
-                    binned_values_for_df = np.array([bin_edges[0]])
-                else:
-                    binned_values_for_df = np.array(
-                        [bin_edges[len(bin_edges) - 1]]
-                    )  # Use actual last edge for 1 bin
-            else:
-                print(
-                    f"Fatal Error: Mismatch between binned_values_for_df (len {len(binned_values_for_df)}) and num_hist_bins ({num_hist_bins}). Cannot construct df_agg."
-                )
-                return pd.DataFrame(), total_rows_processed
-
-        df_agg = pd.DataFrame(
-            {
-                binned_value_column_name: binned_values_for_df,
-                "count": total_counts_hist,
-                "num_fails": fail_counts_hist,
-                "num_converged": converge_counts_hist,
-                "num_converged_fails": fail_converge_counts_hist,
-            }
-        )
-
-        df_agg = df_agg[df_agg["count"] > 0].copy()
-        if not df_agg.empty:
-            df_agg.sort_values(binned_value_column_name, ascending=True, inplace=True)
-            df_agg.reset_index(drop=True, inplace=True)
-
-        if verbose:
             print(
-                f"  -> Generated df_agg with {len(df_agg)} rows from {total_rows_processed} total valid binned entries ({total_samples_considered} samples initially considered), using method '{by}'."
+                f"Fatal Error: Mismatch between binned_values_for_df (len {len(binned_values_for_df)}) and num_hist_bins ({num_hist_bins}). Cannot construct df_agg."
             )
-        return df_agg, total_rows_processed
+            return pd.DataFrame(), total_rows_processed
 
-    except (FileNotFoundError, ValueError) as e_find_val:
-        # This typically catches errors from find_bb_simulation_files or initial validation/range errors
-        print(
-            f"Info: Skipping n={n}, T={T}, p={p} due to data finding/validation issue: {e_find_val}"
-        )
-        return pd.DataFrame(), 0
-    except Exception as e_general:
-        print(
-            f"Error processing n={n}, T={T}, p={p} for method '{by}': {e_general}. Skipping this combination."
-        )
-        import traceback
+    df_agg = pd.DataFrame(
+        {
+            binned_value_column_name: binned_values_for_df,
+            "count": total_counts_hist,
+            "num_fails": fail_counts_hist,
+            "num_converged": converge_counts_hist,
+            "num_converged_fails": fail_converge_counts_hist,
+        }
+    )
 
-        traceback.print_exc()
-        return pd.DataFrame(), 0
+    df_agg = df_agg[df_agg["count"] > 0].copy()
+    if not df_agg.empty:
+        df_agg.sort_values(binned_value_column_name, ascending=True, inplace=True)
+        df_agg.reset_index(drop=True, inplace=True)
+
+    if verbose:
+        print(
+            f"  -> Generated df_agg with {len(df_agg)} rows from {total_rows_processed} total valid binned entries ({total_samples_considered} samples initially considered), using method '{by}'."
+        )
+    return df_agg, total_rows_processed
 
 
 def aggregate_data(
@@ -638,8 +581,7 @@ def aggregate_data(
         found or processed for the specified or scanned combinations.
     """
     if not os.path.isdir(data_dir):
-        print(f"Error: Base data directory not found: {data_dir}")
-        return pd.DataFrame()
+        raise FileNotFoundError(f"Error: Base data directory not found: {data_dir}")
 
     supported_by_methods = [
         "pred_llr",
@@ -650,10 +592,9 @@ def aggregate_data(
         "cluster_llr_norm_gap",
     ]
     if by not in supported_by_methods:
-        print(
+        raise ValueError(
             f"Error: Unsupported 'by' method: {by}. Supported methods are: {supported_by_methods}"
         )
-        return pd.DataFrame()
 
     norm_based_methods = [
         "cluster_size_norm",
@@ -662,10 +603,9 @@ def aggregate_data(
         "cluster_llr_norm_gap",
     ]
     if by in norm_based_methods and (norm_order is None or norm_order <= 0):
-        print(
+        raise ValueError(
             f"Error: 'norm_order' must be a positive float when 'by' is '{by}'. Got: {norm_order}"
         )
-        return pd.DataFrame()
 
     target_combinations: List[Tuple[int, int, float]] = []
 
@@ -696,8 +636,9 @@ def aggregate_data(
         potential_subdirs = glob.glob(subdir_pattern)
 
         if not potential_subdirs:
-            print(f"Error: No subdirectories matching 'n*_T*_p*' found in {data_dir}")
-            return pd.DataFrame()
+            raise FileNotFoundError(
+                f"Error: No subdirectories matching 'n*_T*_p*' found in {data_dir}"
+            )
 
         param_pattern = re.compile(r"n(\d+)_T(\d+)_p([\d\.]+)")
         unique_combinations: Set[Tuple[int, int, float]] = set()
@@ -745,10 +686,9 @@ def aggregate_data(
                             )
 
         if not unique_combinations:
-            print(
+            raise ValueError(
                 "Error: No valid subdirectories with data found matching the criteria."
             )
-            return pd.DataFrame()
 
         target_combinations = sorted(list(unique_combinations))
         if verbose:
@@ -825,11 +765,8 @@ def aggregate_data(
         print(
             f"\nConcatenating results for {processed_combinations_count} successful combinations..."
         )
-    try:
-        all_df_agg = pd.concat(all_ps_dfs, ignore_index=True)
-    except Exception as e_concat:
-        print(f"Error during final concatenation: {e_concat}")
-        return pd.DataFrame()
+
+    all_df_agg = pd.concat(all_ps_dfs, ignore_index=True)
 
     if all_df_agg.empty:
         if verbose:
@@ -838,25 +775,19 @@ def aggregate_data(
 
     if verbose:
         print(f"Setting multi-index (n, T, p, {by})...")
-    try:
-        # The binned value column is now directly named by the 'by' parameter.
-        binned_value_idx_col_name = by
 
-        required_cols = ["n", "T", "p", binned_value_idx_col_name]
-        if not all(col in all_df_agg.columns for col in required_cols):
-            missing = [col for col in required_cols if col not in all_df_agg.columns]
-            print(f"Error: Cannot set multi-index. Missing columns: {missing}")
-            print("Columns available:", all_df_agg.columns.tolist())
-            # Try to return concatenated data if index fails due to unexpected missing 'by' column
-            # This can happen if df_agg_single had a different name for the binned value than expected
-            return all_df_agg
+    # The binned value column is now directly named by the 'by' parameter.
+    binned_value_idx_col_name = by
 
-        all_df_agg = all_df_agg.set_index(required_cols).sort_index()
-        if verbose:
-            print("Concatenation and indexing complete.")
-    except Exception as e_index:
-        print(f"An unexpected error occurred during final indexing/sorting: {e_index}")
-        print("Returning concatenated DataFrame without multi-index.")
-        return all_df_agg  # Return concatenated but unindexed data
+    required_cols = ["n", "T", "p", binned_value_idx_col_name]
+    if not all(col in all_df_agg.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in all_df_agg.columns]
+        raise ValueError(
+            f"Error: Cannot set multi-index. Missing columns: {missing}. Available columns: {all_df_agg.columns.tolist()}"
+        )
+
+    all_df_agg = all_df_agg.set_index(required_cols).sort_index()
+    if verbose:
+        print("Concatenation and indexing complete.")
 
     return all_df_agg

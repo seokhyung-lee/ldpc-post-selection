@@ -1,4 +1,5 @@
 import os
+import re
 import warnings
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
@@ -308,11 +309,11 @@ def task_parallel(
 
 def get_existing_shots(data_dir: str) -> Tuple[int, List[Tuple[int, str, int]]]:
     """
-    Calculate the total number of shots already saved.
+    Calculate the total number of shots already processed by summing shots from directory names.
 
-    It looks for subdirectories named 'batch_{idx}' within data_dir.
-    Inside each 'batch_{idx}' directory, it expects 'scalars.feather'
-    and counts its rows.
+    It looks for subdirectories named 'batch_{idx}_{shots_in_batch_name}' within data_dir.
+    The 'shots_in_batch_name' part of the directory name is parsed to determine
+    the number of shots processed in that batch.
 
     Parameters
     ----------
@@ -322,43 +323,44 @@ def get_existing_shots(data_dir: str) -> Tuple[int, List[Tuple[int, str, int]]]:
     Returns
     -------
     total_existing : int
-        The total number of rows (shots) found across all 'scalars.feather'
-        files in their respective 'batch_{idx}' subdirectories.
+        The total number of shots found by summing the 'shots_in_batch_name'
+        from each valid batch directory name.
     existing_files_info : list of tuple
-        A list containing tuples of (batch_index, batch_directory_path, row_count)
-        for each existing batch directory that contains a readable 'scalars.feather'.
+        A list containing tuples of (batch_index, batch_directory_path, shots_from_dirname)
+        for each correctly named batch directory, sorted by batch_index.
+        'shots_from_dirname' is the number of shots parsed from the directory name.
     """
     total_existing = 0
-    idx = 1
     existing_files_info = []
-    while True:
-        batch_subdir_path = os.path.join(data_dir, f"batch_{idx}")
-        if not os.path.isdir(batch_subdir_path):
-            break  # No more batch_{idx} directories
 
-        fp_feather = os.path.join(batch_subdir_path, "scalars.feather")
-        rows = 0
-        if os.path.exists(fp_feather):
+    # Regex to match "batch_{idx}_{shots_per_batch_in_name}"
+    pattern = re.compile(r"^batch_(\d+)_(\d+)$")
+
+    if not os.path.isdir(data_dir):  # Check if the base data_dir exists
+        return 0, []
+
+    for dirname in os.listdir(data_dir):
+        match = pattern.match(dirname)
+        if match:
             try:
-                data = pd.read_feather(fp_feather)
-                rows = len(data)
-                del data  # Free memory
-            except Exception as e:
+                batch_idx = int(match.group(1))
+                shots_in_name = int(match.group(2))  # Parsed from dirname
+            except ValueError:
                 warnings.warn(
-                    f"Could not read or get row count for {fp_feather}: {e}. Assuming 0 rows."
+                    f"Could not parse batch index or shots from directory name {dirname}. Skipping."
                 )
-                rows = 0
-        else:
-            # If scalars.feather doesn't exist, this batch might be incomplete or not started
-            # We'll still note the directory if we want to resume into it,
-            # but it contributes 0 to existing shots for now.
-            pass  # rows is already 0
+                continue
 
-        total_existing += rows
-        # Store info even if rows is 0, as the batch directory exists.
-        # The next_idx logic depends on the highest existing batch directory index.
-        existing_files_info.append((idx, batch_subdir_path, rows))
-        idx += 1
+            batch_subdir_path = os.path.join(data_dir, dirname)
+            if os.path.isdir(batch_subdir_path):  # Ensure it's a directory
+                # Instead of reading feather, we use shots_in_name
+                total_existing += shots_in_name
+                existing_files_info.append(
+                    (batch_idx, batch_subdir_path, shots_in_name)
+                )
+
+    existing_files_info.sort(key=lambda x: x[0])  # Sort by batch_index
+
     return total_existing, existing_files_info
 
 
@@ -445,8 +447,9 @@ def simulate(
             break  # Should not happen if remaining > 0
 
         # Define the specific directory for this batch's output
-        batch_output_dir = os.path.join(sub_data_dir, f"batch_{next_idx}")
-        os.makedirs(batch_output_dir, exist_ok=True)
+        batch_output_dir = os.path.join(
+            sub_data_dir, f"batch_{next_idx}_{shots_per_batch}"
+        )
 
         t0_batch = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(
@@ -468,6 +471,7 @@ def simulate(
         fp_offsets = os.path.join(batch_output_dir, "offsets.npy")
 
         # Convert dtypes and save
+        os.makedirs(batch_output_dir, exist_ok=True)
         df_new = _convert_df_dtypes_for_feather(
             df_new.copy()
         )  # Use .copy() to avoid SettingWithCopyWarning
@@ -495,12 +499,12 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3, 3e-3, 5e-3]
+    plist = [1e-3]
     n = 144  # [72, 108, 144, 288]
 
     # Changed from a list to a single value for shots_per_batch configuration
-    shots_per_batch = [round(5e6), round(2e6), round(5e5)]
-    total_shots = round(1e7)
+    shots_per_batch = [round(5e6)]
+    total_shots = round(1e9)
 
     # Estimated time (20 cores):
     # p=1e-3, n=144: 100,000 shots/min
