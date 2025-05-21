@@ -4,6 +4,7 @@ from .ext.SlidingWindowDecoder.src.build_circuit import (
     build_circuit as build_BB_circuit_swd,
 )
 from .ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
+from .stim_tools import remove_detectors_from_circuit
 
 
 def build_surface_code_circuit(
@@ -12,6 +13,7 @@ def build_surface_code_circuit(
     T: int,
     p: float = 0.0,
     noise: str = "circuit-level",
+    only_z_detectors: bool = False,
 ) -> stim.Circuit:
     """
     Build a stim circuit for a rotated surface code.
@@ -26,6 +28,8 @@ def build_surface_code_circuit(
         The physical error rate.
     noise : str, default="circuit-level"
         The noise model type. Can be either "circuit-level" or "code-capacity".
+    only_z_detectors : bool, default=False
+        Whether to only include Z-type detectors.
 
     Returns
     -------
@@ -49,6 +53,14 @@ def build_surface_code_circuit(
         before_measure_flip_probability=p_circuit,
         after_reset_flip_probability=p_circuit,
     )
+    if only_z_detectors:
+        detector_coords = circuit.get_detector_coordinates()
+        det_ids_to_remove = []  # X-type detectors
+        for det_id, (x, y, z) in detector_coords.items():
+            if (round(x) + round(y)) % 4 == 2:
+                det_ids_to_remove.append(det_id)
+        circuit = remove_detectors_from_circuit(circuit, det_ids_to_remove)
+
     return circuit
 
 
