@@ -142,7 +142,7 @@ if __name__ == "__main__":
     plist = [1e-3, 3e-3, 5e-3]
     d_list = [5, 9, 13]
 
-    shots_per_batch_list = [round(1e7), round(1e7), round(1e7)]
+    shots_per_batch = round(1e7)
     total_shots = round(1e8)
 
     decoder_prms = {}
@@ -158,9 +158,7 @@ if __name__ == "__main__":
     print(f"\n==== Starting simulations up to {total_shots} shots ====")
     for d_val in d_list:
         for i_p, p in enumerate(plist):
-            shots_per_batch_now = (
-                shots_per_batch_list[i_p] if shots_per_batch_list else 1_000_000
-            )
+            shots_per_batch_now = shots_per_batch
 
             T = d_val
             print(f"\n--- Simulating d={d_val}, p={p}, T={T} ---")
