@@ -8,7 +8,67 @@ import pandas as pd
 import stim
 from joblib import Parallel, delayed
 
-from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
+from src.ldpc_post_selection.decoder import (
+    SoftOutputsBpLsdDecoder,
+    SoftOutputsMatchingDecoder,
+)
+
+
+def get_existing_shots(data_dir: str) -> Tuple[int, List[Tuple[int, str, int]]]:
+    """
+    Calculate the total number of shots already processed by summing shots from directory names.
+
+    It looks for subdirectories named 'batch_{idx}_{shots_in_batch_name}' within data_dir.
+    The 'shots_in_batch_name' part of the directory name is parsed to determine
+    the number of shots processed in that batch.
+
+    Parameters
+    ----------
+    data_dir : str
+        Directory for a specific configuration (e.g., "data/base_dir/n72_T6_p0.002").
+
+    Returns
+    -------
+    total_existing : int
+        The total number of shots found by summing the 'shots_in_batch_name'
+        from each valid batch directory name.
+    existing_files_info : list of tuple
+        A list containing tuples of (batch_index, batch_directory_path, shots_from_dirname)
+        for each correctly named batch directory, sorted by batch_index.
+        'shots_from_dirname' is the number of shots parsed from the directory name.
+    """
+    total_existing = 0
+    existing_files_info = []
+
+    # Regex to match "batch_{idx}_{shots_per_batch_in_name}"
+    pattern = re.compile(r"^batch_(\d+)_(\d+)$")
+
+    if not os.path.isdir(data_dir):  # Check if the base data_dir exists
+        return 0, []
+
+    for dirname in os.listdir(data_dir):
+        match = pattern.match(dirname)
+        if match:
+            try:
+                batch_idx = int(match.group(1))
+                shots_in_name = int(match.group(2))  # Parsed from dirname
+            except ValueError:
+                warnings.warn(
+                    f"Could not parse batch index or shots from directory name {dirname}. Skipping."
+                )
+                continue
+
+            batch_subdir_path = os.path.join(data_dir, dirname)
+            if os.path.isdir(batch_subdir_path):  # Ensure it's a directory
+                # Instead of reading feather, we use shots_in_name
+                total_existing += shots_in_name
+                existing_files_info.append(
+                    (batch_idx, batch_subdir_path, shots_in_name)
+                )
+
+    existing_files_info.sort(key=lambda x: x[0])  # Sort by batch_index
+
+    return total_existing, existing_files_info
 
 
 def _convert_df_dtypes_for_feather(df: pd.DataFrame) -> pd.DataFrame:
@@ -139,7 +199,9 @@ def task(
                 "detector_density": soft_info.get("detector_density"),
             }
         )
-        cluster_sizes_list.append(soft_info.get("cluster_sizes", np.array([])))
+        cluster_sizes_list.append(
+            soft_info.get("cluster_sizes", np.array([], dtype=int))
+        )
         cluster_llrs_list.append(soft_info.get("cluster_llrs", np.array([])))
 
     converges_arr = np.array(converges_list)
@@ -216,34 +278,18 @@ def task_parallel(
         the flattened `flat_cluster_sizes` and `flat_cluster_llrs` arrays.
         The length of this array is (number of samples + 1).
     """
-    if shots == 0:  # Handle case with 0 shots
-        empty_df = pd.DataFrame(
-            columns=["fail", "fail_bp", "converge", "pred_llr", "detector_density"]
-        )
-        empty_df = _convert_df_dtypes_for_feather(
-            empty_df.copy()
-        )  # Ensure correct dtypes
-        return (
-            empty_df,
-            np.array([], dtype=int),
-            np.array([], dtype=float),
-            np.array([0], dtype=int),
-        )
-
     # Divide shots among jobs
-    base = shots // (n_jobs * repeat)
-    remainder = shots % (n_jobs * repeat)
-    chunk_sizes = [base + (1 if i < remainder else 0) for i in range(n_jobs * repeat)]
-    # Filter out zero-sized chunks if any to prevent issues with task
-    chunk_sizes = [cs for cs in chunk_sizes if cs > 0]
-    if not chunk_sizes and shots > 0:  # Should not happen if shots > 0
-        warnings.warn("No chunks to run, though shots > 0. This is unexpected.")
-        empty_df = pd.DataFrame(
-            columns=["fail", "fail_bp", "converge", "pred_llr", "detector_density"]
-        )
-        empty_df = _convert_df_dtypes_for_feather(empty_df.copy())
+    chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
+
+    # Handle empty shots or chunks
+    empty_df_check = _handle_empty_shot_chunks(
+        shots,
+        chunk_sizes,
+        ["fail", "fail_bp", "converge", "pred_llr", "detector_density"],
+    )
+    if empty_df_check is not None:
         return (
-            empty_df,
+            empty_df_check,
             np.array([], dtype=int),
             np.array([], dtype=float),
             np.array([0], dtype=int),
@@ -288,9 +334,9 @@ def task_parallel(
     cluster_llrs_list_flat = [item for sublist in cl_nested_l for item in sublist]
 
     if cluster_sizes_list_flat:
-        flat_cluster_sizes = np.concatenate(cluster_sizes_list_flat)
+        flat_cluster_sizes = np.concatenate(cluster_sizes_list_flat).astype(np.int_)
     else:
-        flat_cluster_sizes = np.array([], dtype=int)
+        flat_cluster_sizes = np.array([], dtype=np.int_)
 
     if cluster_llrs_list_flat:
         flat_cluster_llrs = np.concatenate(cluster_llrs_list_flat)
@@ -302,61 +348,196 @@ def task_parallel(
         np.int64
     )  # Use int64 for cumsum, then cast later
 
+    df = _convert_df_dtypes_for_feather(df.copy())  # Ensure correct dtypes for output
     return df, flat_cluster_sizes, flat_cluster_llrs, offsets
 
 
-def get_existing_shots(data_dir: str) -> Tuple[int, List[Tuple[int, str, int]]]:
+def task_matching(
+    shots: int,
+    circuit: stim.Circuit,
+    decoder_prms: Dict[str, Any] | None = None,
+) -> Tuple[np.ndarray, List[Dict[str, float]]]:
     """
-    Calculate the total number of shots already processed by summing shots from directory names.
-
-    It looks for subdirectories named 'batch_{idx}_{shots_in_batch_name}' within data_dir.
-    The 'shots_in_batch_name' part of the directory name is parsed to determine
-    the number of shots processed in that batch.
+    Run a single simulation task using the Matching decoder.
 
     Parameters
     ----------
-    data_dir : str
-        Directory for a specific configuration (e.g., "data/base_dir/n72_T6_p0.002").
+    shots : int
+        Number of shots to simulate.
+    circuit : stim.Circuit
+        The pre-built quantum error correction circuit.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the SoftOutputsMatchingDecoder.
 
     Returns
     -------
-    total_existing : int
-        The total number of shots found by summing the 'shots_in_batch_name'
-        from each valid batch directory name.
-    existing_files_info : list of tuple
-        A list containing tuples of (batch_index, batch_directory_path, shots_from_dirname)
-        for each correctly named batch directory, sorted by batch_index.
-        'shots_from_dirname' is the number of shots parsed from the directory name.
+    fails : np.ndarray
+        Boolean array indicating if the Matching decoding failed for each shot.
+    scalar_soft_infos : list of dict
+        List of dictionaries, each containing scalar soft information like
+        'pred_llr', 'detector_density', and 'gap' for each shot.
     """
-    total_existing = 0
-    existing_files_info = []
+    sampler = circuit.compile_detector_sampler()
+    det, obs = sampler.sample(shots, separate_observables=True)
 
-    # Regex to match "batch_{idx}_{shots_per_batch_in_name}"
-    pattern = re.compile(r"^batch_(\d+)_(\d+)$")
+    if decoder_prms is None:
+        decoder_prms = {}
 
-    if not os.path.isdir(data_dir):  # Check if the base data_dir exists
-        return 0, []
+    decoder = SoftOutputsMatchingDecoder(
+        circuit=circuit,
+        **decoder_prms,
+    )
+    preds_list = []
+    scalar_soft_infos_list = []
 
-    for dirname in os.listdir(data_dir):
-        match = pattern.match(dirname)
-        if match:
-            try:
-                batch_idx = int(match.group(1))
-                shots_in_name = int(match.group(2))  # Parsed from dirname
-            except ValueError:
-                warnings.warn(
-                    f"Could not parse batch index or shots from directory name {dirname}. Skipping."
-                )
-                continue
+    for det_sng in det:
+        pred, soft_info = decoder.decode(
+            det_sng,
+        )
 
-            batch_subdir_path = os.path.join(data_dir, dirname)
-            if os.path.isdir(batch_subdir_path):  # Ensure it's a directory
-                # Instead of reading feather, we use shots_in_name
-                total_existing += shots_in_name
-                existing_files_info.append(
-                    (batch_idx, batch_subdir_path, shots_in_name)
-                )
+        preds_list.append(pred)
+        scalar_soft_infos_list.append(soft_info)
 
-    existing_files_info.sort(key=lambda x: x[0])  # Sort by batch_index
+    preds_arr = (
+        np.array(preds_list)
+        if preds_list
+        else np.empty((0, circuit.num_detectors), dtype=bool)
+    )
 
-    return total_existing, existing_files_info
+    obs_matrix_T = decoder.obs_matrix.T
+    if preds_arr.shape[0] > 0:
+        obs_preds_arr = ((preds_arr.astype(np.uint8) @ obs_matrix_T) % 2).astype(bool)
+        fails_arr = np.any(obs ^ obs_preds_arr, axis=1)
+    else:  # Handle case with 0 shots
+        fails_arr = np.empty(0, dtype=bool)
+
+    return fails_arr, scalar_soft_infos_list
+
+
+def task_matching_parallel(
+    shots: int,
+    circuit: stim.Circuit,
+    n_jobs: int,
+    repeat: int = 10,
+    decoder_prms: Dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """
+    Run the `task_matching` function in parallel and return results.
+
+    Parameters
+    ----------
+    shots : int
+        Total number of shots to simulate.
+    circuit : stim.Circuit
+        The pre-built quantum error correction circuit.
+    n_jobs : int
+        Number of parallel jobs.
+    repeat : int
+        Number of repeats for parallel execution.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the decoder.
+
+    Returns
+    -------
+    df : pandas.DataFrame
+        DataFrame containing boolean flags (fail) and scalar
+        float soft outputs (pred_llr, detector_density, gap) for each sample.
+    """
+    # Divide shots among jobs
+    chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
+
+    # Handle empty shots or chunks
+    empty_df_check = _handle_empty_shot_chunks(
+        shots, chunk_sizes, ["fail", "pred_llr", "detector_density", "gap"]
+    )
+    if empty_df_check is not None:
+        return empty_df_check
+
+    # Execute tasks in parallel
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(task_matching)(
+            shots=chunk,
+            circuit=circuit,  # Pass circuit
+            decoder_prms=decoder_prms,
+        )
+        for chunk in chunk_sizes
+    )
+
+    # Unpack and combine results
+    fails_l, scalar_soft_infos_nested_l = zip(*results)
+
+    fails_s = pd.Series(np.concatenate(fails_l), name="fail", dtype=bool)
+
+    scalar_soft_infos_flat_list = [
+        item for sublist in scalar_soft_infos_nested_l for item in sublist
+    ]
+    df_soft = pd.DataFrame(
+        scalar_soft_infos_flat_list
+    )  # Contains pred_llr, detector_density, gap
+
+    # Combine fail flag with soft info
+    df = pd.concat([fails_s, df_soft], axis=1)
+
+    df = _convert_df_dtypes_for_feather(df.copy())  # Ensure correct dtypes for output
+    return df
+
+
+def _calculate_chunk_sizes(shots: int, n_jobs: int, repeat: int) -> List[int]:
+    """
+    Calculates the distribution of shots into chunks for parallel processing.
+
+    Parameters
+    ----------
+    shots : int
+        Total number of shots.
+    n_jobs : int
+        Number of parallel jobs.
+    repeat : int
+        Number of repeats for parallel execution.
+
+    Returns
+    -------
+    chunk_sizes : list of int
+        A list where each element is the number of shots for a chunk.
+        Zero-sized chunks are filtered out.
+    """
+    if shots == 0:
+        return []
+    base = shots // (n_jobs * repeat)
+    remainder = shots % (n_jobs * repeat)
+    chunk_sizes = [base + (1 if i < remainder else 0) for i in range(n_jobs * repeat)]
+    # Filter out zero-sized chunks if any to prevent issues with task
+    chunk_sizes = [cs for cs in chunk_sizes if cs > 0]
+    return chunk_sizes
+
+
+def _handle_empty_shot_chunks(
+    shots: int, chunk_sizes: List[int], columns: List[str]
+) -> pd.DataFrame | None:
+    """
+    Handles cases where there are no shots or no chunks to process.
+
+    Parameters
+    ----------
+    shots : int
+        Total number of shots.
+    chunk_sizes : list of int
+        List of chunk sizes.
+    columns : list of str
+        Column names for the empty DataFrame if returned.
+
+    Returns
+    -------
+    df : pandas.DataFrame or None
+        Returns an empty DataFrame with specified columns if shots is 0
+        or if there are no chunks despite shots > 0. Otherwise, returns None.
+    """
+    if shots == 0:
+        empty_df = pd.DataFrame(columns=columns)
+        return _convert_df_dtypes_for_feather(empty_df.copy())
+
+    if not chunk_sizes and shots > 0:
+        warnings.warn("No chunks to run, though shots > 0. This is unexpected.")
+        empty_df = pd.DataFrame(columns=columns)
+        return _convert_df_dtypes_for_feather(empty_df.copy())
+    return None

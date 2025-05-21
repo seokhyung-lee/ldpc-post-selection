@@ -9,7 +9,7 @@ from simulations.simulation_utils import (
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
     get_existing_shots,
-    task_parallel
+    task_matching_parallel,
 )
 from src.ldpc_post_selection.build_circuit import build_surface_code_circuit
 
@@ -27,7 +27,7 @@ def simulate(
 ) -> None:
     """
     Run the simulation for a given (p, d, T) configuration, saving results in batches.
-    Results include a Feather file for scalar data and NumPy files for ragged arrays.
+    Results include a Feather file for scalar data.
 
     Parameters
     ----------
@@ -42,13 +42,13 @@ def simulate(
     data_dir : str
         Base directory to store output subdirectories.
     n_jobs : int
-        Number of parallel jobs for `task_parallel`.
+        Number of parallel jobs for `task_matching_parallel`.
     repeat : int
-        Number of repeats for `task_parallel`.
+        Number of repeats for `task_matching_parallel`.
     shots_per_batch : int
         Number of shots to simulate and save per batch file.
     decoder_prms : Dict[str, Any], optional
-        Parameters for the SoftOutputsBpLsdDecoder.
+        Parameters for the SoftOutputsMatchingDecoder.
 
     Returns
     -------
@@ -78,11 +78,6 @@ def simulate(
     circuit = build_surface_code_circuit(
         p=p, d=d, T=T, noise="circuit-level", only_z_detectors=True
     )
-    dem = circuit.detector_error_model()
-
-    # Determine dtypes for NumPy arrays using the helper function
-    cluster_size_dtype = _get_optimal_uint_dtype(dem.num_errors)
-    offset_dtype = _get_optimal_uint_dtype(dem.num_errors * shots_per_batch)
 
     # Determine the next file index
     next_idx = (
@@ -106,7 +101,7 @@ def simulate(
             f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, d={d}, T={T}. Output to: {batch_output_dir}"
         )
 
-        df_new, flat_cluster_sizes, flat_cluster_llrs, offsets = task_parallel(
+        df_new = task_matching_parallel(
             shots=to_run,
             circuit=circuit,  # Pass the pre-built circuit
             n_jobs=n_jobs,
@@ -116,9 +111,6 @@ def simulate(
 
         # Prepare filenames for this batch (now with fixed names within batch_output_dir)
         fp_feather = os.path.join(batch_output_dir, "scalars.feather")
-        fp_cs = os.path.join(batch_output_dir, "cluster_sizes.npy")
-        fp_cl = os.path.join(batch_output_dir, "cluster_llrs.npy")
-        fp_offsets = os.path.join(batch_output_dir, "offsets.npy")
 
         # Convert dtypes and save
         os.makedirs(batch_output_dir, exist_ok=True)
@@ -126,10 +118,6 @@ def simulate(
             df_new.copy()
         )  # Use .copy() to avoid SettingWithCopyWarning
         df_new.to_feather(fp_feather)
-
-        np.save(fp_cs, flat_cluster_sizes.astype(cluster_size_dtype))
-        np.save(fp_cl, flat_cluster_llrs.astype(np.float32))
-        np.save(fp_offsets, offsets.astype(offset_dtype))
 
         current_simulated_for_config += to_run
         remaining -= to_run
@@ -157,15 +145,10 @@ if __name__ == "__main__":
     shots_per_batch_list = [round(1e7), round(1e7), round(1e7)]
     total_shots = round(1e8)
 
-    decoder_prms = {
-        "max_iter": 30,
-        "bp_method": "minimum_sum",
-        "lsd_method": "LSD_0",
-        "lsd_order": 0,
-    }
+    decoder_prms = {}
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "data/surface_code_minsum_iter30_lsd0")
+    data_dir = os.path.join(current_dir, "data/surface_code_matching")
     os.makedirs(data_dir, exist_ok=True)
 
     print("d_list =", d_list)

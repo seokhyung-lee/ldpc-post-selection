@@ -235,8 +235,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         final_cluster_bit_counts.append(outside_bit_counts)
         final_cluster_llrs.append(outside_llrs)
 
-        soft_outputs["cluster_sizes"] = np.array(final_cluster_bit_counts)
-        soft_outputs["cluster_llrs"] = np.array(final_cluster_llrs)
+        soft_outputs["cluster_sizes"] = np.array(
+            final_cluster_bit_counts, dtype=np.int_
+        )
+        soft_outputs["cluster_llrs"] = np.array(final_cluster_llrs, dtype=np.float64)
 
         assert len(final_cluster_bit_counts) == len(final_cluster_llrs)
 
@@ -335,7 +337,6 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
         circuit : stim.Circuit, optional
             Circuit.
         """
-        # SoftOutputsMatchingDecoder will always use decompose_errors=True if a circuit is given
         super().__init__(
             H=H, p=p, obs_matrix=obs_matrix, circuit=circuit, decompose_errors=True
         )
