@@ -13,7 +13,7 @@ from src.ldpc_post_selection.build_circuit import build_BB_circuit
 
 # Import from the new utility file
 from .simulation_data_utils import (
-    _calculate_histograms_numba,
+    _calculate_histograms_bplsd_numba,
     _get_values_for_binning_from_batch,
     natural_sort_key,
 )
@@ -423,7 +423,7 @@ def calculate_df_agg_for_combination(
             fail_counts_hist,
             converge_counts_hist,
             fail_converge_counts_hist,
-        ) = _calculate_histograms_numba(
+        ) = _calculate_histograms_bplsd_numba(
             values_np,
             fail_mask,
             bin_edges,

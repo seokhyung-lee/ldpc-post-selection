@@ -11,7 +11,8 @@ from tqdm import tqdm
 
 # Import from the new utility file
 from .simulation_data_utils import (
-    _calculate_histograms_numba,
+    _calculate_histograms_bplsd_numba,
+    _calculate_histograms_matching_numba,
     _get_values_for_binning_from_batch,
     natural_sort_key,
 )
@@ -77,12 +78,15 @@ def find_surface_code_simulation_files(
         raise ValueError(f"No batch directories (batch_*) found in {sub_dir_path}.")
 
     valid_batch_dir_paths = []
-    required_files = [
-        "scalars.feather",
-        "cluster_sizes.npy",
-        "cluster_llrs.npy",
-        "offsets.npy",
-    ]
+    # Only 'scalars.feather' is strictly required at the discovery stage.
+    # Other files' existence will be checked later if needed by the 'by' method.
+    required_files = ["scalars.feather"]
+    # required_files = [
+    #     "scalars.feather",
+    #     "cluster_sizes.npy",
+    #     "cluster_llrs.npy",
+    #     "offsets.npy",
+    # ]
 
     for batch_dir in potential_batch_dirs:
         is_complete = True
@@ -185,18 +189,6 @@ def calculate_df_agg_for_combination(
     total_rows_processed : int
         Total number of simulation samples processed (typically from scalars.feather).
     """
-    supported_by_methods = [
-        "pred_llr",
-        "detector_density",
-        "cluster_size_norm",
-        "cluster_llr_norm",
-        "cluster_size_norm_gap",
-        "cluster_llr_norm_gap",
-    ]
-    if by not in supported_by_methods:
-        raise ValueError(
-            f"Unsupported 'by' method: {by}. Supported methods are: {supported_by_methods}"
-        )
 
     norm_based_methods = [
         "cluster_size_norm",
@@ -366,12 +358,18 @@ def calculate_df_agg_for_combination(
         total_samples_considered += len(df_scalars)
 
         required_scalar_cols = ["fail", "converge", "fail_bp"]
-        if not all(col in df_scalars.columns for col in required_scalar_cols):
+        has_bplsd_cols = all(col in df_scalars.columns for col in required_scalar_cols)
+        has_fail_col = "fail" in df_scalars.columns
+
+        if not has_fail_col:
             if verbose:
                 print(
-                    f"  Skipping {os.path.basename(batch_dir)} due to missing fail/converge/fail_bp columns in scalars.feather."
+                    f"  Skipping {os.path.basename(batch_dir)} due to missing 'fail' column in scalars.feather."
                 )
             continue
+
+        # If bplsd cols are missing, we can still proceed if only 'fail' is present
+        # The histogram calculation will adapt.
 
         start_time_calc_downstream = time.perf_counter()
         series_to_bin_cleaned = series_to_bin.dropna()
@@ -409,62 +407,66 @@ def calculate_df_agg_for_combination(
         fail_mask = df_scalars.loc[series_to_bin_cleaned.index, "fail"].to_numpy(
             dtype=bool
         )
-        converge_mask = df_scalars.loc[
-            series_to_bin_cleaned.index, "converge"
-        ].to_numpy(dtype=bool)
-        fail_bp_mask = df_scalars.loc[series_to_bin_cleaned.index, "fail_bp"].to_numpy(
-            dtype=bool
-        )
 
-        (
-            total_counts_hist,
-            fail_counts_hist,
-            converge_counts_hist,
-            fail_converge_counts_hist,
-        ) = _calculate_histograms_numba(
-            values_np,
-            fail_mask,
-            bin_edges,
-            total_counts_hist,
-            fail_counts_hist,
-            converge_mask,
-            converge_counts_hist,
-            fail_converge_counts_hist,
-            fail_bp_mask,
-        )
+        if has_bplsd_cols:
+            converge_mask = df_scalars.loc[
+                series_to_bin_cleaned.index, "converge"
+            ].to_numpy(dtype=bool)
+            fail_bp_mask = df_scalars.loc[
+                series_to_bin_cleaned.index, "fail_bp"
+            ].to_numpy(dtype=bool)
+
+            (
+                total_counts_hist,
+                fail_counts_hist,
+                converge_counts_hist,
+                fail_converge_counts_hist,
+            ) = _calculate_histograms_bplsd_numba(
+                values_np,
+                fail_mask,
+                bin_edges,
+                total_counts_hist,
+                fail_counts_hist,
+                converge_mask,
+                converge_counts_hist,
+                fail_converge_counts_hist,
+                fail_bp_mask,
+            )
+        else:  # Only 'fail' column is guaranteed to be present
+            (
+                total_counts_hist,
+                fail_counts_hist,
+            ) = _calculate_histograms_matching_numba(
+                values_np,
+                fail_mask,
+                bin_edges,
+                total_counts_hist,
+                fail_counts_hist,
+            )
+            # For consistency in df_agg, ensure these arrays exist even if not used by matching_numba
+            # They will remain zeros if has_bplsd_cols is false.
+            # converge_counts_hist and fail_converge_counts_hist are already initialized to zeros
+            # and will not be updated if has_bplsd_cols is false.
 
         hist_time_batch = time.perf_counter() - start_time_hist
         total_hist_time += hist_time_batch
 
-        del (
-            series_to_bin,
-            df_scalars,
-            series_to_bin_cleaned,
-            values_np,
-            fail_mask,
-            converge_mask,
-            fail_bp_mask,
-        )
+        # Clean up to free memory for large objects from the current batch
+        del series_to_bin
+        del df_scalars
+        del series_to_bin_cleaned
+        del values_np
+        del fail_mask
+
+        if has_bplsd_cols:
+            # These were defined inside the `if has_bplsd_cols:` block for histogram calculation
+            del converge_mask
+            del fail_bp_mask
 
         # Optional: if a batch error occurs, decide if you want to continue or stop
         # if batch_processing_error: continue # or break, or raise
 
     gc.collect()
-
-    if verbose:
-        print("--- Benchmarking Results ---")
-        print(
-            f"Total samples considered from scalars.feather: {total_samples_considered}"
-        )
-        print(f"Total valid entries binned: {total_rows_processed}")
-        print(
-            f"Total time reading & initial processing per batch: {total_read_time:.4f} seconds"
-        )
-        print(
-            f"Total time for downstream calculations on series (e.g., dropna): {total_calc_value_time:.4f} seconds"
-        )
-        print(f"Total time calculating histograms: {total_hist_time:.4f} seconds")
-        print("----------------------------")
 
     if total_rows_processed == 0:
         # This means no data points were actually binned across all batches.
@@ -496,15 +498,18 @@ def calculate_df_agg_for_combination(
             )
             return pd.DataFrame(), total_rows_processed
 
-    df_agg = pd.DataFrame(
-        {
-            binned_value_column_name: binned_values_for_df,
-            "count": total_counts_hist,
-            "num_fails": fail_counts_hist,
-            "num_converged": converge_counts_hist,
-            "num_converged_fails": fail_converge_counts_hist,
-        }
-    )
+    df_agg_data = {
+        binned_value_column_name: binned_values_for_df,
+        "count": total_counts_hist,
+        "num_fails": fail_counts_hist,
+    }
+    if np.any(converge_counts_hist > 0) or np.any(
+        fail_converge_counts_hist > 0
+    ):  # Add these columns only if they have data
+        df_agg_data["num_converged"] = converge_counts_hist
+        df_agg_data["num_converged_fails"] = fail_converge_counts_hist
+
+    df_agg = pd.DataFrame(df_agg_data)
 
     df_agg = df_agg[df_agg["count"] > 0].copy()
     if not df_agg.empty:
@@ -580,19 +585,6 @@ def aggregate_data(
     """
     if not os.path.isdir(data_dir):
         raise FileNotFoundError(f"Error: Base data directory not found: {data_dir}")
-
-    supported_by_methods = [
-        "pred_llr",
-        "detector_density",
-        "cluster_size_norm",
-        "cluster_llr_norm",
-        "cluster_size_norm_gap",
-        "cluster_llr_norm_gap",
-    ]
-    if by not in supported_by_methods:
-        raise ValueError(
-            f"Error: Unsupported 'by' method: {by}. Supported methods are: {supported_by_methods}"
-        )
 
     norm_based_methods = [
         "cluster_size_norm",
@@ -685,7 +677,7 @@ def aggregate_data(
 
         if not unique_combinations:
             raise ValueError(
-                "Error: No valid subdirectories with data found matching the criteria."
+                f"Error: No valid subdirectories with data found matching the criteria: {unique_combinations}"
             )
 
         target_combinations = sorted(list(unique_combinations))

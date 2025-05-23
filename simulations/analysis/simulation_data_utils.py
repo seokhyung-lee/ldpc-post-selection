@@ -30,7 +30,7 @@ def natural_sort_key(s: str) -> int:
 
 
 @numba.njit(fastmath=True, cache=True)
-def _calculate_histograms_numba(
+def _calculate_histograms_bplsd_numba(
     values_np: np.ndarray,  # Expect float array
     fail_mask_np: np.ndarray,  # Expect boolean array
     bin_edges: np.ndarray,  # Expect float array
@@ -130,6 +130,107 @@ def _calculate_histograms_numba(
     )
 
 
+@numba.njit(fastmath=True, cache=True)
+def _calculate_histograms_matching_numba(
+    values_np: np.ndarray,  # Expect float array
+    fail_mask_np: np.ndarray,  # Expect boolean array
+    bin_edges: np.ndarray,  # Expect float array
+    total_counts_hist: np.ndarray,  # Expect int64 array
+    fail_counts_hist: np.ndarray,  # Expect int64 array
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate total and fail histograms using Numba with an optimized single loop.
+    This is a simplified version of _calculate_histograms_bplsd_numba,
+    calculating only total and fail counts.
+
+    Parameters
+    ----------
+    values_np : 1D numpy array of float
+        Values to be histogrammed. NaNs should be removed before calling.
+    fail_mask_np : 1D numpy array of bool
+        Indicates failures, aligned with values_np.
+    bin_edges : 1D numpy array of float
+        Defines the histogram bin edges, must be sorted.
+    total_counts_hist : 1D numpy array of int64
+        Histogram counts for all samples (updated in-place).
+    fail_counts_hist : 1D numpy array of int64
+        Histogram counts for failed samples (updated in-place).
+
+    Returns
+    -------
+    total_counts_hist : 1D numpy array of int64
+        The updated histogram counts for all samples.
+    fail_counts_hist : 1D numpy array of int64
+        The updated histogram counts for failed samples.
+
+    Notes
+    -----
+    This implementation manually calculates the histogram bins in a single pass.
+    It assumes NaNs have been filtered from values_np before calling.
+    It replicates np.histogram's behavior regarding bin edges:
+    bins are [left, right), except the last bin which is [left, right].
+    """
+    n_bins = len(bin_edges) - 1
+    if n_bins <= 0:  # Handle empty or invalid bin_edges
+        return (
+            total_counts_hist,
+            fail_counts_hist,
+        )
+
+    for i in range(len(values_np)):
+        val = values_np[i]
+
+        # Check if value is within the histogram range
+        if val < bin_edges[0] or val > bin_edges[-1]:
+            continue
+
+        # Determine the bin index using searchsorted
+        # Find the insertion point for `val` in `bin_edges[:-1]` (all bin starts)
+        # `side='right'` means if `val` is equal to an edge, it goes to the right bin
+        bin_idx = np.searchsorted(bin_edges[:-1], val, side="right")
+
+        # If `val` is equal to `bin_edges[-1]` (the very last edge),
+        # it belongs to the last bin `n_bins - 1`.
+        # `searchsorted` with `bin_edges[:-1]` would return `n_bins` in this case.
+        if bin_idx == n_bins:  # val >= bin_edges[-2]
+            if val == bin_edges[-1]:  # Exactly the last edge
+                bin_idx = n_bins - 1
+            else:  # val > bin_edges[-1], so it's out of bounds (already handled above)
+                # or val is between bin_edges[-2] and bin_edges[-1] but not equal to bin_edges[-1]
+                # if val > bin_edges[-1] -> continue
+                # if val == bin_edges[-2] -> searchsorted gives n_bins-1, then bin_idx-1 = n_bins-2. Correct.
+                # if bin_edges[-2] < val < bin_edges[-1] -> searchsorted gives n_bins-1, then bin_idx-1 = n_bins-2. Correct.
+                # This logic seems a bit off, let's simplify based on np.histogram behavior.
+                # np.digitize is what np.histogram uses internally.
+                # Correct approach for bin_idx from np.searchsorted:
+                # bin_idx is the index of the first edge that is > val.
+                # So, val belongs to bin bin_idx - 1.
+                pass  # bin_idx will be adjusted below
+
+        # Adjust bin_idx: searchsorted returns insertion point, so subtract 1 for actual bin index
+        bin_idx = bin_idx - 1
+
+        # Special handling for the rightmost bin edge for np.histogram compatibility
+        # If the value is exactly the rightmost edge, it belongs to the last bin.
+        if (
+            val == bin_edges[-1]
+        ):  # and bin_idx was n_bins -1 (making it n_bins-2 after adjustment)
+            # or bin_idx was n_bins (making it n_bins-1 after adjustment)
+            bin_idx = n_bins - 1
+
+        if 0 <= bin_idx < n_bins:
+            total_counts_hist[bin_idx] += 1
+            if fail_mask_np[i]:
+                fail_counts_hist[bin_idx] += 1
+        # else: val is outside the range [bin_edges[0], bin_edges[-1]]
+        # or an edge case not handled, but the initial check should cover it.
+
+    return (
+        total_counts_hist,
+        fail_counts_hist,
+    )
+
+
 def calculate_confidence_interval(
     n: int, k: int, alpha: float = 0.05, method: str = "wilson"
 ) -> Tuple[float, float]:
@@ -195,28 +296,37 @@ def get_df_ps(df_agg: pd.DataFrame, ascending_confidence: bool = True) -> pd.Dat
     pacc, delta_pacc = calculate_confidence_interval(shots, counts)
 
     # --- Treating convergence = confident ---
-    # Calculate counts considering convergence: Start with total converged, add non-converged counts bin-wise
-    counts_conv = df_agg["count"] - df_agg["num_converged"]
-    if not counts_conv.empty:
-        counts_conv.iloc[0] += df_agg["num_converged"].sum()
-    counts_conv = counts_conv.cumsum()
+    if "num_converged" in df_agg.columns and "num_converged_fails" in df_agg.columns:
+        # Calculate counts considering convergence: Start with total converged, add non-converged counts bin-wise
+        counts_conv = df_agg["count"] - df_agg["num_converged"]
+        if not counts_conv.empty:
+            counts_conv.iloc[0] += df_agg["num_converged"].sum()
+        counts_conv = counts_conv.cumsum()
 
-    # Ensure total count matches shots
-    if not counts_conv.empty:
-        assert np.isclose(
-            counts_conv.iloc[-1], shots
-        ), f"counts_conv final ({counts_conv.iloc[-1]}) != shots ({shots})"
+        # Ensure total count matches shots
+        if not counts_conv.empty:
+            assert np.isclose(
+                counts_conv.iloc[-1], shots
+            ), f"counts_conv final ({counts_conv.iloc[-1]}) != shots ({shots})"
 
-    # Calculate failures considering convergence: Start with total converged fails, add non-converged fails bin-wise
-    num_fails_conv = df_agg["num_fails"] - df_agg["num_converged_fails"]
-    if not num_fails_conv.empty:
-        num_fails_conv.iloc[0] += df_agg["num_converged_fails"].sum()
-    num_fails_conv = num_fails_conv.cumsum()
+        # Calculate failures considering convergence: Start with total converged fails, add non-converged fails bin-wise
+        num_fails_conv = df_agg["num_fails"] - df_agg["num_converged_fails"]
+        if not num_fails_conv.empty:
+            num_fails_conv.iloc[0] += df_agg["num_converged_fails"].sum()
+        num_fails_conv = num_fails_conv.cumsum()
 
-    pfail_conv, delta_pfail_conv = calculate_confidence_interval(
-        counts_conv, num_fails_conv
-    )
-    pacc_conv, delta_pacc_conv = calculate_confidence_interval(shots, counts_conv)
+        pfail_conv, delta_pfail_conv = calculate_confidence_interval(
+            counts_conv, num_fails_conv
+        )
+        pacc_conv, delta_pacc_conv = calculate_confidence_interval(shots, counts_conv)
+    else:
+        # If convergence data is not available, fill with NaNs or appropriate defaults
+        counts_conv = pd.Series(np.nan, index=df_agg.index)
+        num_fails_conv = pd.Series(np.nan, index=df_agg.index)
+        pfail_conv = pd.Series(np.nan, index=df_agg.index)
+        delta_pfail_conv = pd.Series(np.nan, index=df_agg.index)
+        pacc_conv = pd.Series(np.nan, index=df_agg.index)
+        delta_pacc_conv = pd.Series(np.nan, index=df_agg.index)
 
     # --- Assemble Results ---
     # Create the DataFrame with the same index as the input (or reversed input)
@@ -227,16 +337,18 @@ def get_df_ps(df_agg: pd.DataFrame, ascending_confidence: bool = True) -> pd.Dat
     df_ps["p_abort"] = 1.0 - pacc  # Abort probability = 1 - acceptance probability
     df_ps["delta_p_abort"] = delta_pacc  # Width is the same for p and 1-p
 
-    df_ps["p_fail_conv"] = pfail_conv
-    df_ps["delta_p_fail_conv"] = delta_pfail_conv
-    df_ps["p_abort_conv"] = 1.0 - pacc_conv
-    df_ps["delta_p_abort_conv"] = delta_pacc_conv
+    # Only add *_conv columns if convergence columns exist in df_agg
+    if "num_converged" in df_agg.columns and "num_converged_fails" in df_agg.columns:
+        df_ps["p_fail_conv"] = pfail_conv
+        df_ps["delta_p_fail_conv"] = delta_pfail_conv
+        df_ps["p_abort_conv"] = 1.0 - pacc_conv
+        df_ps["delta_p_abort_conv"] = delta_pacc_conv
+        df_ps["count_conv"] = counts_conv
+        df_ps["num_fails_conv"] = num_fails_conv
 
     # Add cumulative counts for reference
     df_ps["count"] = counts
     df_ps["num_fails"] = num_fails
-    df_ps["count_conv"] = counts_conv
-    df_ps["num_fails_conv"] = num_fails_conv
 
     # If the input was reversed, reverse the output back to match the original df_agg index order
     if ascending_confidence:
@@ -349,125 +461,147 @@ def _calculate_norms_for_samples(
 
 def _get_values_for_binning_from_batch(
     batch_dir_path: str, by: str, norm_order: float | None, verbose: bool = False
-) -> Tuple[pd.Series, pd.DataFrame]:
+) -> Tuple[pd.Series | None, pd.DataFrame | None]:
     """
-    Load data from a single batch directory and extract/calculate the series
-    to be used for binning, along with the scalars DataFrame.
-    Handles different 'by' methods including direct column reads and norm calculations.
+    Loads data from a single batch directory needed for a specific aggregation method ('by').
+
+    This function loads 'scalars.feather' and, if required by the 'by' method,
+    also loads 'cluster_sizes.npy', 'cluster_llrs.npy', and 'offsets.npy'.
+    It then calculates or extracts the primary series to be binned.
+
+    Parameters
+    ----------
+    batch_dir_path : str
+        Path to the batch directory.
+    by : str
+        The aggregation method.
+    norm_order : float, optional
+        Order for L_p norm calculation, required for norm-based 'by' methods.
+    verbose : bool, optional
+        If True, prints detailed loading information.
 
     Returns
     -------
-    series_to_bin : pd.Series
-        The data series to be binned.
-    df_scalars : pd.DataFrame
-        The DataFrame loaded from 'scalars.feather'.
+    series_to_bin : pd.Series or None
+        The Series containing values to be binned. None if essential files are missing
+        or data cannot be computed.
+    df_scalars : pd.DataFrame or None
+        The DataFrame loaded from 'scalars.feather'. None if 'scalars.feather' is missing.
 
     Raises
     ------
     FileNotFoundError
-        If 'scalars.feather' or other required .npy files are not found.
-    IOError
-        If there's an issue loading 'scalars.feather' (other than not found).
+        If 'scalars.feather' is not found, or if a .npy file ('cluster_sizes.npy',
+        'cluster_llrs.npy', 'offsets.npy') required by the chosen 'by' method
+        is not found in the batch directory.
     ValueError
-        If 'scalars.feather' is empty, 'by' column is invalid, norm_order is missing/invalid,
-        or array length mismatches occur.
-    KeyError
-        If the specified 'by' column is not in 'scalars.feather'.
-    RuntimeError
-        For internal logic errors or unexpected issues during norm calculation.
+        If `norm_order` is not provided for a norm-based `by` method.
     """
     scalars_path = os.path.join(batch_dir_path, "scalars.feather")
+    cluster_sizes_path = os.path.join(batch_dir_path, "cluster_sizes.npy")
+    cluster_llrs_path = os.path.join(batch_dir_path, "cluster_llrs.npy")
+    offsets_path = os.path.join(batch_dir_path, "offsets.npy")
 
-    df_scalars = pd.read_feather(scalars_path)
-
-    if df_scalars.empty:
-        # This handles the case where read_feather succeeds but returns an empty DataFrame
-        raise ValueError(
-            f"scalars.feather at {scalars_path} loaded as an empty DataFrame."
+    # Check for scalars.feather first, as it's always needed.
+    if not os.path.isfile(scalars_path):
+        if verbose:
+            print(
+                f"  Error: scalars.feather not found in {batch_dir_path}. Cannot process this batch."
+            )
+        # Raise FileNotFoundError directly as per new requirement
+        raise FileNotFoundError(
+            f"scalars.feather not found in {batch_dir_path}. Cannot process this batch."
         )
 
-    series_to_bin: pd.Series | None = None  # Initialize to satisfy type checker
-
-    if by in ["pred_llr", "detector_density"]:
-        if by not in df_scalars.columns:
-            raise KeyError(
-                f"Column '{by}' not found in scalars.feather for {batch_dir_path}. Available columns: {df_scalars.columns.tolist()}"
-            )
-        series_to_bin = df_scalars[by]
-
-    elif by in [
+    # Define which 'by' methods require the .npy files
+    npy_dependent_methods = [
         "cluster_size_norm",
         "cluster_llr_norm",
         "cluster_size_norm_gap",
         "cluster_llr_norm_gap",
-    ]:
-        if norm_order is None:
-            raise ValueError(
-                f"'norm_order' is required for 'by={by}' but not provided for batch: {os.path.basename(batch_dir_path)}"
+    ]
+    files_required_for_by_method = []
+    if by in npy_dependent_methods:
+        files_required_for_by_method = [
+            ("cluster_sizes.npy", cluster_sizes_path),
+            ("cluster_llrs.npy", cluster_llrs_path),
+            ("offsets.npy", offsets_path),
+        ]
+
+    for fname, fpath in files_required_for_by_method:
+        if not os.path.isfile(fpath):
+            error_msg = (
+                f"Error: {fname} is required for 'by={by}' method but not found "
+                f"in {batch_dir_path}. Cannot process this batch."
             )
+            raise FileNotFoundError(
+                error_msg
+            )  # Raise error if required .npy is missing
 
-        cluster_sizes_path = os.path.join(batch_dir_path, "cluster_sizes.npy")
-        cluster_llrs_path = os.path.join(batch_dir_path, "cluster_llrs.npy")
-        offsets_path = os.path.join(batch_dir_path, "offsets.npy")
+    df_scalars = pd.read_feather(scalars_path)
 
-        cluster_sizes_all_samples = np.load(cluster_sizes_path, allow_pickle=True)
-        cluster_llrs_all_samples = np.load(cluster_llrs_path, allow_pickle=True)
-        offsets = np.load(offsets_path)
-        offsets = offsets[
-            :-1
-        ]  # Remove the last element as it's one greater than num_samples
-
-        data_for_norm = None
-        # Determine data_for_norm based on 'by'
-        if by.startswith("cluster_size_norm"):
-            data_for_norm = cluster_sizes_all_samples
-        elif by.startswith("cluster_llr_norm"):
-            data_for_norm = cluster_llrs_all_samples
-
-        if data_for_norm is None:  # Should not happen if by is one of the norm methods
-            raise RuntimeError(
-                f"Internal error: data_for_norm is None for by='{by}' in batch {os.path.basename(batch_dir_path)}. This path should be unreachable."
-            )
-
-        (
-            calculated_norms,
-            outside_values_from_func,
-        ) = _calculate_norms_for_samples(
-            data_for_norm, offsets, norm_order  # type: ignore
-        )
-
-        if len(calculated_norms) != len(df_scalars.index):
-            raise ValueError(
-                f"Mismatch in array lengths from norm calculation ({len(calculated_norms)}) and scalar samples ({len(df_scalars.index)}) for by='{by}' in {os.path.basename(batch_dir_path)}."
-            )
-
-        # Create a Series for the norms, aligned with df_scalars' index
-        norm_series = pd.Series(calculated_norms, index=df_scalars.index, dtype=float)
-
-        if by.endswith("_gap"):
-            # For "gap" methods, series_to_bin = outside_value - norm_value
-            outside_series = pd.Series(
-                outside_values_from_func, index=df_scalars.index, dtype=float
-            )
-            series_to_bin = outside_series - norm_series
-        else:
-            # For non-"gap" norm methods, series_to_bin = norm_value
-            series_to_bin = norm_series
-
-    else:
-        raise ValueError(
-            f"Unsupported or unhandled 'by' method: '{by}' provided to _get_values_for_binning_from_batch for {os.path.basename(batch_dir_path)}"
-        )
-
-    # Ensure the series returned has the same index as df_scalars
-    if not series_to_bin.index.equals(df_scalars.index):
+    if df_scalars.empty:
         if verbose:
-            print(
-                f"  Warning (simulation_data_utils): series_to_bin index does not match df_scalars index for {by} in {os.path.basename(batch_dir_path)}. Reindexing."
+            print(f"  Warning: scalars.feather in {batch_dir_path} is empty.")
+        # Still return the empty df_scalars as it exists, the caller can decide to skip.
+        # The series_to_bin will likely be empty or None.
+
+    series_to_bin: pd.Series | None = None
+
+    if by in npy_dependent_methods:
+        if norm_order is None or norm_order <= 0:
+            raise ValueError(
+                f"'norm_order' must be a positive float when 'by' is '{by}'. Got: {norm_order}"
             )
-        # This reindex is crucial. If series_to_bin was formed from subset of indices (e.g. only processed_sample_indices),
-        # it needs to be expanded to match df_scalars for consistent downstream processing.
-        # Fill_value=np.nan ensures that samples that couldn't be processed for norms (if any) are marked as NaN.
-        series_to_bin = series_to_bin.reindex(df_scalars.index, fill_value=np.nan)
+
+        cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
+        cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
+        offsets = np.load(offsets_path, allow_pickle=False)[:-1]
+
+        num_samples = len(df_scalars)
+        inside_cluster_size_norms = np.full(num_samples, np.nan, dtype=float)
+        inside_cluster_llr_norms = np.full(num_samples, np.nan, dtype=float)
+
+        if cluster_sizes_flat.size > 0:
+            inside_cluster_size_norms, outside_value = _calculate_norms_for_samples(
+                flat_data=cluster_sizes_flat,
+                offsets=offsets,
+                norm_order=norm_order,
+            )
+        if cluster_llrs_flat.size > 0:
+            inside_cluster_llr_norms, outside_value = _calculate_norms_for_samples(
+                flat_data=cluster_llrs_flat,
+                offsets=offsets,
+                norm_order=norm_order,
+            )
+
+        if by == "cluster_size_norm":
+            series_to_bin = pd.Series(inside_cluster_size_norms, index=df_scalars.index)
+        elif by == "cluster_llr_norm":
+            series_to_bin = pd.Series(inside_cluster_llr_norms, index=df_scalars.index)
+        elif by == "cluster_size_norm_gap":
+            series_to_bin = pd.Series(
+                outside_value - inside_cluster_size_norms, index=df_scalars.index
+            )
+        elif by == "cluster_llr_norm_gap":
+            series_to_bin = pd.Series(
+                outside_value - inside_cluster_llr_norms, index=df_scalars.index
+            )
+    else:  # 'by' is not an npy_dependent_method, try to get column directly
+        if by in df_scalars.columns:
+            series_to_bin = df_scalars[by].copy()
+        else:
+            raise ValueError(
+                f"  Error: Column '{by}' not found in scalars.feather for {batch_dir_path}."
+            )
+
+    # Clean up to free memory, especially if large arrays were loaded
+    if "cluster_sizes_flat" in locals():
+        del cluster_sizes_flat
+    if "cluster_llrs_flat" in locals():
+        del cluster_llrs_flat
+    if "offsets" in locals():
+        del offsets
+    # No need to call gc.collect() aggressively here; Python's GC will handle it.
 
     return series_to_bin, df_scalars
