@@ -142,8 +142,8 @@ if __name__ == "__main__":
     plist = [1e-3, 3e-3, 5e-3]
     d_list = [5, 9, 13]
 
-    shots_per_batch = round(1e7)
-    total_shots = round(1e8)
+    shots_per_batch = round(5e7)
+    total_shots = round(1e9)
 
     decoder_prms = {}
 

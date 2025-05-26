@@ -105,11 +105,8 @@ def _calculate_histograms_bplsd_numba(
         # Determine the bin index using searchsorted
         bin_idx = np.searchsorted(bin_edges[:-1], val, side="right")
 
-        if bin_idx == n_bins:
-            if val == bin_edges[-1]:
-                bin_idx = n_bins - 1
-            else:
-                continue
+        if bin_idx == n_bins and val == bin_edges[-1]:
+            bin_idx = n_bins - 1
         else:
             bin_idx = bin_idx - 1
 
@@ -189,41 +186,15 @@ def _calculate_histograms_matching_numba(
         # `side='right'` means if `val` is equal to an edge, it goes to the right bin
         bin_idx = np.searchsorted(bin_edges[:-1], val, side="right")
 
-        # If `val` is equal to `bin_edges[-1]` (the very last edge),
-        # it belongs to the last bin `n_bins - 1`.
-        # `searchsorted` with `bin_edges[:-1]` would return `n_bins` in this case.
-        if bin_idx == n_bins:  # val >= bin_edges[-2]
-            if val == bin_edges[-1]:  # Exactly the last edge
-                bin_idx = n_bins - 1
-            else:  # val > bin_edges[-1], so it's out of bounds (already handled above)
-                # or val is between bin_edges[-2] and bin_edges[-1] but not equal to bin_edges[-1]
-                # if val > bin_edges[-1] -> continue
-                # if val == bin_edges[-2] -> searchsorted gives n_bins-1, then bin_idx-1 = n_bins-2. Correct.
-                # if bin_edges[-2] < val < bin_edges[-1] -> searchsorted gives n_bins-1, then bin_idx-1 = n_bins-2. Correct.
-                # This logic seems a bit off, let's simplify based on np.histogram behavior.
-                # np.digitize is what np.histogram uses internally.
-                # Correct approach for bin_idx from np.searchsorted:
-                # bin_idx is the index of the first edge that is > val.
-                # So, val belongs to bin bin_idx - 1.
-                pass  # bin_idx will be adjusted below
-
-        # Adjust bin_idx: searchsorted returns insertion point, so subtract 1 for actual bin index
-        bin_idx = bin_idx - 1
-
-        # Special handling for the rightmost bin edge for np.histogram compatibility
-        # If the value is exactly the rightmost edge, it belongs to the last bin.
-        if (
-            val == bin_edges[-1]
-        ):  # and bin_idx was n_bins -1 (making it n_bins-2 after adjustment)
-            # or bin_idx was n_bins (making it n_bins-1 after adjustment)
+        if bin_idx == n_bins and val == bin_edges[-1]:
             bin_idx = n_bins - 1
+        else:
+            bin_idx = bin_idx - 1
 
         if 0 <= bin_idx < n_bins:
             total_counts_hist[bin_idx] += 1
             if fail_mask_np[i]:
                 fail_counts_hist[bin_idx] += 1
-        # else: val is outside the range [bin_edges[0], bin_edges[-1]]
-        # or an edge case not handled, but the initial check should cover it.
 
     return (
         total_counts_hist,

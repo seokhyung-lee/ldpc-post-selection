@@ -9,7 +9,7 @@ from simulations.simulation_utils import (
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
     get_existing_shots,
-    task_parallel
+    task_parallel,
 )
 from src.ldpc_post_selection.build_circuit import build_surface_code_circuit
 
@@ -151,11 +151,11 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3, 3e-3, 5e-3]
-    d_list = [5, 9, 13]
+    plist = [1e-3, 3e-3]
+    d_list = [9, 13]
 
-    shots_per_batch_list = [round(1e7), round(1e7), round(1e7)]
-    total_shots = round(1e8)
+    shots_per_batch_list = [round(5e7), round(5e7), round(5e7)]
+    total_shots = round(1e9)
 
     decoder_prms = {
         "max_iter": 30,

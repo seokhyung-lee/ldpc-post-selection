@@ -781,3 +781,74 @@ def aggregate_data(
         print("Concatenation and indexing complete.")
 
     return all_df_agg
+
+
+if __name__ == "__main__":
+    ascending_confidences = {
+        "pred_llr": False,
+        "detector_density": False,
+        # "cluster_size_norm": False,
+        # "cluster_llr_norm": False,
+        # "cluster_size_norm_gap": True,
+        "cluster_llr_norm_gap": True,
+    }
+
+    ascending_confidences_matching = {
+        "pred_llr": False,
+        "detector_density": False,
+        "gap": True,
+    }
+
+    orders = [1, 2, np.inf]
+    # orders = [2]
+
+    d = 9
+    p = 0.005
+
+    df_agg_dict = {}
+
+    for by, ascending_confidence in ascending_confidences.items():
+        print(
+            f"\nAggregating data for {by} with ascending_confidence={ascending_confidence}..."
+        )
+
+        norm_orders = orders if "norm" in by else [None]
+
+        for order in norm_orders:
+            if order is not None:
+                print(f"norm_order = {order}")
+                key = f"{by}_{order}"
+            else:
+                key = by
+
+            df_agg = aggregate_data(
+                by=by,
+                d=d,
+                p=p,
+                norm_order=order,
+                num_hist_bins=10000,
+                ascending_confidence=ascending_confidence,
+                data_dir="../data/surface_code_minsum_iter30_lsd0",
+                verbose=False,
+            )
+            df_agg_dict[key] = (df_agg, ascending_confidence)
+
+        print("=============")
+
+    for by, ascending_confidence in ascending_confidences_matching.items():
+        print(
+            f"\nAggregating data for {by} (matching) with ascending_confidence={ascending_confidence}..."
+        )
+        df_agg = aggregate_data(
+            by=by,
+            d=d,
+            p=p,
+            num_hist_bins=10000,
+            ascending_confidence=ascending_confidence,
+            data_dir="../data/surface_code_matching",
+            verbose=False,
+        )
+        key = "matching_" + by
+        df_agg_dict[key] = (df_agg, ascending_confidence)
+
+        print("=============")
