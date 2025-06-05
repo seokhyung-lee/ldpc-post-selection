@@ -11,7 +11,7 @@ from simulations.simulation_utils import (
     get_existing_shots,
     task_parallel,
 )
-from src.ldpc_post_selection.build_circuit import build_surface_code_circuit
+from simulations.build_circuit import build_surface_code_circuit
 
 
 def simulate(
@@ -151,11 +151,13 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3, 3e-3]
-    d_list = [9, 13]
+    plist = [1e-2]
+    d_list = [3, 5, 9, 13]
 
-    shots_per_batch_list = [round(5e7), round(5e7), round(5e7)]
-    total_shots = round(1e9)
+    shots_per_batch = round(1e7)
+    total_shots = round(1e7)
+    n_jobs = 18
+    repeat = 10
 
     decoder_prms = {
         "max_iter": 30,
@@ -175,10 +177,6 @@ if __name__ == "__main__":
     print(f"\n==== Starting simulations up to {total_shots} shots ====")
     for d_val in d_list:
         for i_p, p in enumerate(plist):
-            shots_per_batch_now = (
-                shots_per_batch_list[i_p] if shots_per_batch_list else 1_000_000
-            )
-
             T = d_val
             print(f"\n--- Simulating d={d_val}, p={p}, T={T} ---")
             simulate(
@@ -187,9 +185,9 @@ if __name__ == "__main__":
                 d=d_val,
                 T=T,
                 data_dir=data_dir,
-                n_jobs=19,
-                repeat=10,
-                shots_per_batch=shots_per_batch_now,
+                n_jobs=n_jobs,
+                repeat=repeat,
+                shots_per_batch=shots_per_batch,
                 decoder_prms=decoder_prms,
             )
 

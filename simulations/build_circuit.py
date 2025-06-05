@@ -1,10 +1,10 @@
 import stim
 
-from .ext.SlidingWindowDecoder.src.build_circuit import (
+from src.ldpc_post_selection.ext.SlidingWindowDecoder.src.build_circuit import (
     build_circuit as build_BB_circuit_swd,
 )
-from .ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
-from .stim_tools import remove_detectors_from_circuit
+from src.ldpc_post_selection.ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
+from src.ldpc_post_selection.stim_tools import remove_detectors_from_circuit
 
 
 def build_surface_code_circuit(

@@ -11,7 +11,7 @@ from simulations.simulation_utils import (
     get_existing_shots,
     task_parallel,
 )
-from src.ldpc_post_selection.build_circuit import build_BB_circuit, get_BB_distance
+from simulations.build_circuit import build_BB_circuit, get_BB_distance
 
 
 def simulate(
@@ -147,11 +147,11 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3]
-    n = 72  # [72, 108, 144, 288]
+    plist = [1e-2]
+    nlist = [72, 144]  # [72, 108, 144, 288]
 
-    shots_per_batch = [round(5e7)]
-    total_shots = round(1e9)
+    shots_per_batch = round(1e6)
+    total_shots = round(1e7)
 
     # Estimated time (19 cores):
     # p=1e-3, n=144: 100,000 shots/min
@@ -172,25 +172,25 @@ if __name__ == "__main__":
     data_dir = os.path.join(current_dir, "data/bb_minsum_iter30_lsd0")
     os.makedirs(data_dir, exist_ok=True)
 
-    print("n =", n)
+    print("nlist =", nlist)
     print("plist =", plist)
     print("decoder_prms =", decoder_prms)
 
     print(f"\n==== Starting simulations up to {total_shots} shots ====")
-    for i_p, p in enumerate(plist):
-        shots_per_batch_now = shots_per_batch[i_p]
+    for n in nlist:
         T = get_BB_distance(n)
-        simulate(
-            shots=total_shots,
-            p=p,
-            n=n,
-            T=T,
-            data_dir=data_dir,
-            n_jobs=19,
-            repeat=10,
-            shots_per_batch=shots_per_batch_now,
-            decoder_prms=decoder_prms,
-        )
+        for i_p, p in enumerate(plist):
+            simulate(
+                shots=total_shots,
+                p=p,
+                n=n,
+                T=T,
+                data_dir=data_dir,
+                n_jobs=19,
+                repeat=10,
+                shots_per_batch=shots_per_batch,
+                decoder_prms=decoder_prms,
+            )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==== Simulations completed ({t0}) ====")

@@ -18,13 +18,13 @@ if __name__ == "__main__":
     num_hist_bins = 10000
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "../data/bb_minsum_iter30_lsd0")
+    data_dir = os.path.join(current_dir, "../data/hgp_(3,4)_minsum_iter30_lsd0")
 
-    # Process BB code data
-    print("Processing BB code data...")
+    # Process HGP code data
+    print("Processing HGP code data...")
     process_dataset(
         data_dir=data_dir,
-        dataset_name="bb",
+        dataset_name="hgp",
         ascending_confidences=ascending_confidences,
         orders=orders,
         num_hist_bins=num_hist_bins,
