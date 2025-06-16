@@ -4,26 +4,32 @@ from typing import Tuple, List
 import numpy as np
 import pandas as pd
 import time
+from scipy import sparse
 from statsmodels.stats.proportion import proportion_confint
 from tqdm import tqdm
 
 from ..simulation_utils import get_existing_shots
-from .numba_functions import (
-    _calculate_norms_for_samples,
+from .numpy_utils import (
+    _calculate_cluster_norms_from_flat_data_numba,
+    calculate_cluster_metrics_from_csr,
     _calculate_histograms_bplsd_numba,
     _calculate_histograms_matching_numba,
 )
 
 
 def _get_values_for_binning_from_batch(
-    batch_dir_path: str, by: str, norm_order: float | None, verbose: bool = False
+    batch_dir_path: str,
+    by: str,
+    norm_order: float | None,
+    priors: np.ndarray | None = None,
+    verbose: bool = False,
 ) -> Tuple[pd.Series | None, pd.DataFrame | None]:
     """
     Loads data from a single batch directory needed for a specific aggregation method ('by').
 
     This function loads 'scalars.feather' and, if required by the 'by' method,
-    also loads 'cluster_sizes.npy', 'cluster_llrs.npy', and 'offsets.npy'.
-    It then calculates or extracts the primary series to be binned.
+    also loads cluster data. It supports both legacy format (cluster_sizes.npy, cluster_llrs.npy, offsets.npy)
+    and new format (clusters.npz with on-the-fly calculation).
 
     Parameters
     ----------
@@ -33,6 +39,8 @@ def _get_values_for_binning_from_batch(
         The aggregation method.
     norm_order : float, optional
         Order for L_p norm calculation, required for norm-based 'by' methods.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
     verbose : bool, optional
         If True, prints detailed loading information.
 
@@ -48,6 +56,7 @@ def _get_values_for_binning_from_batch(
     cluster_sizes_path = os.path.join(batch_dir_path, "cluster_sizes.npy")
     cluster_llrs_path = os.path.join(batch_dir_path, "cluster_llrs.npy")
     offsets_path = os.path.join(batch_dir_path, "offsets.npy")
+    clusters_path = os.path.join(batch_dir_path, "clusters.npz")
 
     # Check for scalars.feather first, as it's always needed.
     if not os.path.isfile(scalars_path):
@@ -60,30 +69,31 @@ def _get_values_for_binning_from_batch(
             f"scalars.feather not found in {batch_dir_path}. Cannot process this batch."
         )
 
-    # Define which 'by' methods require the .npy files
-    npy_dependent_methods = [
-        "cluster_size_norm",
-        "cluster_llr_norm",
-        "cluster_size_norm_gap",
-        "cluster_llr_norm_gap",
-    ]
-    files_required_for_by_method = []
-    if by in npy_dependent_methods:
-        files_required_for_by_method = [
-            ("cluster_sizes.npy", cluster_sizes_path),
-            ("cluster_llrs.npy", cluster_llrs_path),
-            ("offsets.npy", offsets_path),
-        ]
+    # Check for cluster data availability
+    use_legacy_format = False
+    use_new_format = False
 
-    for fname, fpath in files_required_for_by_method:
-        if not os.path.isfile(fpath):
-            error_msg = (
-                f"Error: {fname} is required for 'by={by}' method but not found "
-                f"in {batch_dir_path}. Cannot process this batch."
-            )
+    if "cluster" in by:
+        # Check legacy format first
+        legacy_files_exist = all(
+            os.path.isfile(fpath)
+            for fpath in [cluster_sizes_path, cluster_llrs_path, offsets_path]
+        )
+        new_format_exists = os.path.isfile(clusters_path)
+
+        if legacy_files_exist and "norm" in by:
+            use_legacy_format = True
+            if verbose:
+                print(f"  Using legacy format for {batch_dir_path}")
+        elif new_format_exists:
+            use_new_format = True
+            if verbose:
+                print(f"  Using new format for {batch_dir_path}")
+        else:
             raise FileNotFoundError(
-                error_msg
-            )  # Raise error if required .npy is missing
+                f"Error: Neither legacy format (cluster_sizes.npy, cluster_llrs.npy, offsets.npy) "
+                f"nor new format (clusters.npz) found for 'by={by}' method in {batch_dir_path}."
+            )
 
     df_scalars = pd.read_feather(scalars_path)
 
@@ -95,45 +105,95 @@ def _get_values_for_binning_from_batch(
 
     series_to_bin: pd.Series | None = None
 
-    if by in npy_dependent_methods:
-        if norm_order is None or norm_order <= 0:
-            raise ValueError(
-                f"'norm_order' must be a positive float when 'by' is '{by}'. Got: {norm_order}"
-            )
-
-        cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
-        cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
-        offsets = np.load(offsets_path, allow_pickle=False)[:-1]
-
+    if "cluster" in by:
         num_samples = len(df_scalars)
         inside_cluster_size_norms = np.full(num_samples, np.nan, dtype=float)
         inside_cluster_llr_norms = np.full(num_samples, np.nan, dtype=float)
+        cluster_metrics = np.full(num_samples, np.nan, dtype=float)
 
-        if cluster_sizes_flat.size > 0:
-            inside_cluster_size_norms, outside_value = _calculate_norms_for_samples(
-                flat_data=cluster_sizes_flat,
-                offsets=offsets,
-                norm_order=norm_order,
-            )
-        if cluster_llrs_flat.size > 0:
-            inside_cluster_llr_norms, outside_value = _calculate_norms_for_samples(
-                flat_data=cluster_llrs_flat,
-                offsets=offsets,
-                norm_order=norm_order,
-            )
+        if use_legacy_format:
+            # Legacy format: load flat arrays and offsets
+            offsets = np.load(offsets_path, allow_pickle=False)[:-1]
+
+            if by == "cluster_size_norm":
+                cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
+                inside_cluster_size_norms, outside_value = (
+                    _calculate_cluster_norms_from_flat_data_numba(
+                        flat_data=cluster_sizes_flat,
+                        offsets=offsets,
+                        norm_order=norm_order,
+                    )
+                )
+            elif by == 'cluster_llr_norm':
+                cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
+                inside_cluster_llr_norms, outside_value = (
+                    _calculate_cluster_norms_from_flat_data_numba(
+                        flat_data=cluster_llrs_flat,
+                        offsets=offsets,
+                        norm_order=norm_order,
+                    )
+                )
+            else:
+                raise ValueError(f"Unsupported method ({by}) for legacy data structure.")
+
+        elif use_new_format:
+            # New format: load clusters and calculate directly from CSR format
+            clusters_csr = sparse.load_npz(clusters_path)
+
+            # Calculate norms directly from CSR format using Numba
+            if by in ["cluster_size_norm", "cluster_size_norm_gap"]:
+                inside_cluster_size_norms, outside_size_values = (
+                    calculate_cluster_metrics_from_csr(
+                        clusters=clusters_csr,
+                        method="norm",
+                        priors=priors,  # Zeros for size calculations
+                        norm_order=norm_order,
+                    )
+                )
+            elif by in ["cluster_llr_norm", "cluster_llr_norm_gap"]:
+                bit_llrs = np.log((1 - priors) / priors)
+                inside_cluster_llr_norms, outside_llr_values = (
+                    calculate_cluster_metrics_from_csr(
+                        clusters=clusters_csr,
+                        method="llr_norm",
+                        priors=priors,
+                        norm_order=norm_order,
+                    )
+                )
+
+            else:
+                cluster_metrics = calculate_cluster_metrics_from_csr(
+                    clusters=clusters_csr,
+                    method=by,
+                    priors=priors,
+                )
 
         if by == "cluster_size_norm":
             series_to_bin = pd.Series(inside_cluster_size_norms, index=df_scalars.index)
         elif by == "cluster_llr_norm":
             series_to_bin = pd.Series(inside_cluster_llr_norms, index=df_scalars.index)
         elif by == "cluster_size_norm_gap":
-            series_to_bin = pd.Series(
-                outside_value - inside_cluster_size_norms, index=df_scalars.index
-            )
+            if use_new_format:
+                series_to_bin = pd.Series(
+                    outside_size_values - inside_cluster_size_norms,
+                    index=df_scalars.index,
+                )
+            else:
+                series_to_bin = pd.Series(
+                    outside_value - inside_cluster_size_norms, index=df_scalars.index
+                )
         elif by == "cluster_llr_norm_gap":
-            series_to_bin = pd.Series(
-                outside_value - inside_cluster_llr_norms, index=df_scalars.index
-            )
+            if use_new_format:
+                series_to_bin = pd.Series(
+                    outside_llr_values - inside_cluster_llr_norms,
+                    index=df_scalars.index,
+                )
+            else:
+                series_to_bin = pd.Series(
+                    outside_value - inside_cluster_llr_norms, index=df_scalars.index
+                )
+        else:
+            series_to_bin = pd.Series(cluster_metrics, index=df_scalars.index)
     else:  # 'by' is not an npy_dependent_method, try to get column directly
         if by in df_scalars.columns:
             series_to_bin = df_scalars[by].copy()
@@ -216,6 +276,7 @@ def calculate_df_agg_for_combination(
     ascending_confidence: bool = True,
     by: str = "pred_llr",
     norm_order: float | None = None,
+    priors: np.ndarray | None = None,
     verbose: bool = False,
 ) -> Tuple[pd.DataFrame, int]:
     """
@@ -256,10 +317,15 @@ def calculate_df_agg_for_combination(
                                    Requires `norm_order`.
         - "cluster_llr_norm_gap": outside_cluster_llr - norm_of_inside_cluster_llrs.
                                   Requires `norm_order`.
+        - "cluster_inv_entropy": Sum of entropies for all inside clusters per sample.
+                            Each bit's inv_entropy is calculated as -p * log(p) - (1-p) * log(1-p).
+                            Requires `priors`.
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm-based methods.
         Must be a positive float (can be np.inf).
         Required if `by` is one of the norm or norm-gap methods.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
 
@@ -297,6 +363,7 @@ def calculate_df_agg_for_combination(
         norm_order,
         min_value_override,
         max_value_override,
+        priors,
         verbose,
     )
 
@@ -324,6 +391,7 @@ def calculate_df_agg_for_combination(
         adjusted_num_hist_bins,
         min_value_override,
         max_value_override,
+        priors,
         verbose,
     )
 
@@ -381,6 +449,7 @@ def _determine_value_range_single(
     norm_order: float | None,
     min_value_override: float | None,
     max_value_override: float | None,
+    priors: np.ndarray | None = None,
     verbose: bool = False,
 ) -> Tuple[float, float]:
     """
@@ -432,6 +501,7 @@ def _determine_value_range_single(
             batch_dir_path=batch_dir_pass1,
             by=by,
             norm_order=norm_order,
+            priors=priors,
             verbose=verbose > 1,
         )
 
@@ -479,6 +549,7 @@ def _process_histograms_from_batches_single(
     num_hist_bins: int,
     min_value_override: float | None,
     max_value_override: float | None,
+    priors: np.ndarray | None = None,
     verbose: bool = False,
 ) -> Tuple[
     np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, float, float, float
@@ -550,6 +621,7 @@ def _process_histograms_from_batches_single(
             batch_dir_path=batch_dir,
             by=by,
             norm_order=norm_order,
+            priors=priors,
             verbose=verbose > 1,
         )
         read_and_initial_calc_time = time.perf_counter() - start_time_read
@@ -752,6 +824,7 @@ def aggregate_data(
     value_range: tuple[float, float] | None = None,
     ascending_confidence: bool = True,
     norm_order: float | None = None,
+    priors: np.ndarray | None = None,
     df_existing: pd.DataFrame | None = None,
     verbose: bool = False,
 ) -> tuple[pd.DataFrame, bool]:
@@ -773,6 +846,9 @@ def aggregate_data(
                                    Requires `norm_order`.
         - "cluster_llr_norm_gap": outside_cluster_llr - norm_of_inside_cluster_llrs.
                                   Requires `norm_order`.
+        - "cluster_inv_entropy": Sum of entropies for all inside clusters per sample.
+                            Each bit's inv_entropy is calculated as -p * log(p) - (1-p) * log(1-p).
+                            Requires `priors`.
         - All the other values are read from the 'scalars.feather' file.
     num_hist_bins : int, optional
         Number of bins to use for the histogram. Defaults to 1000.
@@ -785,6 +861,8 @@ def aggregate_data(
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
         Must be a positive float. Required if `by` is one of the norm-based methods.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
     df_existing : pd.DataFrame, optional
         Existing aggregation data with the same format as the return value of this function.
         If provided and the total shots from data files match the total shots in df_existing,
@@ -875,6 +953,7 @@ def aggregate_data(
         ascending_confidence=ascending_confidence,
         by=by,
         norm_order=norm_order,
+        priors=priors,
         verbose=verbose,
     )
 
@@ -887,150 +966,3 @@ def aggregate_data(
             )
 
     return df_agg, False
-
-
-# def aggregate_data_batch(
-#     base_data_dir: str,
-#     *,
-#     by: str,
-#     num_hist_bins: int = 1000,
-#     value_range: tuple[float, float] | None = None,
-#     ascending_confidence: bool = True,
-#     norm_order: float | None = None,
-#     df_existing_dict: dict[str, pd.DataFrame] | None = None,
-#     verbose: bool = False,
-# ) -> dict[str, pd.DataFrame]:
-#     """
-#     Aggregate simulation data for multiple parameter combinations in batch.
-
-#     This function iterates through all subdirectories in base_data_dir and performs
-#     aggregate_data on each subdirectory that contains batch folders.
-
-#     Parameters
-#     ----------
-#     base_data_dir : str
-#         Base directory path containing subdirectories, each representing a parameter combination.
-#     by : str
-#         Column or method to aggregate by.
-#         Supported values:
-#         - "cluster_size_norm": Calculates norm of "inside" cluster sizes per sample.
-#                                Requires `norm_order`.
-#         - "cluster_llr_norm": Calculates norm of "inside" cluster LLRs per sample.
-#                               Requires `norm_order`.
-#         - "cluster_size_norm_gap": outside_cluster_size - norm_of_inside_cluster_sizes.
-#                                    Requires `norm_order`.
-#         - "cluster_llr_norm_gap": outside_cluster_llr - norm_of_inside_cluster_llrs.
-#                                   Requires `norm_order`.
-#         - All the other values are read from the 'scalars.feather' file.
-#     num_hist_bins : int, optional
-#         Number of bins to use for the histogram. Defaults to 1000.
-#     value_range : tuple[float, float], optional
-#         User-specified minimum and maximum values for the histogram range ([min, max]).
-#         If None, it's auto-detected for each subdirectory separately.
-#     ascending_confidence : bool, optional
-#         Indicates the relationship between the aggregated value and decoding confidence.
-#         Defaults to True.
-#     norm_order : float, optional
-#         The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
-#         Must be a positive float. Required if `by` is one of the norm-based methods.
-#     df_existing_dict : dict[str, pd.DataFrame], optional
-#         Dictionary of existing aggregation data with subdirectory names as keys.
-#         For each subdirectory, if provided and the total shots match, existing data
-#         will be reused without reprocessing.
-#     verbose : bool, optional
-#         Whether to print progress and informational messages. Defaults to False.
-
-#     Returns
-#     -------
-#     results_dict : dict[str, pd.DataFrame]
-#         Dictionary with subdirectory names as keys and aggregated DataFrames as values.
-#         Subdirectories that fail processing or have no valid data will have empty DataFrames.
-#     """
-#     if not os.path.isdir(base_data_dir):
-#         raise FileNotFoundError(
-#             f"Error: Base data directory not found: {base_data_dir}"
-#         )
-
-#     # Find all subdirectories
-#     subdirectories = []
-#     for item in os.listdir(base_data_dir):
-#         item_path = os.path.join(base_data_dir, item)
-#         if os.path.isdir(item_path):
-#             # Check if this subdirectory contains batch folders
-#             has_batch_folders = any(
-#                 subitem.startswith("batch_")
-#                 and os.path.isdir(os.path.join(item_path, subitem))
-#                 for subitem in os.listdir(item_path)
-#             )
-#             if has_batch_folders:
-#                 subdirectories.append((item, item_path))
-
-#     if not subdirectories:
-#         if verbose:
-#             print(
-#                 f"Warning: No subdirectories with batch folders found in {base_data_dir}"
-#             )
-#         return {}
-
-#     subdirectories.sort()  # For consistent ordering
-
-#     if verbose:
-#         print(
-#             f"Found {len(subdirectories)} subdirectories with batch data in {base_data_dir}"
-#         )
-#         print(f"Processing with aggregation method: {by}")
-#         if norm_order is not None:
-#             print(f"Norm order: {norm_order}")
-
-#     results_dict = {}
-#     successful_count = 0
-#     failed_count = 0
-
-#     for subdir_name, subdir_path in subdirectories:
-#         if verbose:
-#             print(f"\nProcessing subdirectory: {subdir_name}")
-
-#         try:
-#             # Get existing data for this subdirectory if available
-#             df_existing_single = None
-#             if df_existing_dict is not None and subdir_name in df_existing_dict:
-#                 df_existing_single = df_existing_dict[subdir_name]
-
-#             # Perform aggregation for this subdirectory
-#             df_result = aggregate_data(
-#                 data_dir=subdir_path,
-#                 by=by,
-#                 num_hist_bins=num_hist_bins,
-#                 value_range=value_range,
-#                 ascending_confidence=ascending_confidence,
-#                 norm_order=norm_order,
-#                 df_existing=df_existing_single,
-#                 verbose=verbose > 1,  # Reduce verbosity for individual calls
-#             )
-
-#             results_dict[subdir_name] = df_result
-
-#             if not df_result.empty:
-#                 successful_count += 1
-#                 if verbose:
-#                     print(
-#                         f"  -> Successfully processed {subdir_name}: {len(df_result)} bins"
-#                     )
-#             else:
-#                 if verbose:
-#                     print(f"  -> Warning: No data generated for {subdir_name}")
-
-#         except Exception as e:
-#             failed_count += 1
-#             if verbose:
-#                 print(f"  -> Error processing {subdir_name}: {e}")
-#             # Store empty DataFrame for failed processing
-#             results_dict[subdir_name] = pd.DataFrame()
-
-#     if verbose:
-#         print(f"\nBatch processing complete:")
-#         print(f"  Successfully processed: {successful_count}")
-#         print(f"  Failed to process: {failed_count}")
-#         print(f"  Total subdirectories: {len(subdirectories)}")
-
-#     return results_dict

@@ -9,29 +9,27 @@ from scipy import sparse
 from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 from simulations.simulation_utils import (
     _convert_df_dtypes_for_feather,
-    _get_optimal_uint_dtype,
     get_existing_shots,
     bplsd_simulation_task_parallel,
 )
-from simulations.build_circuit import build_BB_circuit, get_BB_distance
+
+from simulations.build_circuit import build_color_code_circuit
 
 
 def simulate(
     shots: int,
     p: float,
-    n: int,
+    d: int,
     T: int,
     data_dir: str,
     n_jobs: int,
     repeat: int,
     shots_per_batch: int = 1_000_000,
     decoder_prms: Dict[str, Any] | None = None,
-    compute_logical_gap_proxy: bool = False,
-    include_cluster_stats: bool = True,
 ) -> None:
     """
-    Run the simulation for a given (p, n, T) configuration, saving results in batches.
-    Results include a Feather file for scalar data and NumPy files for ragged arrays.
+    Run the simulation for a given (p, d, T) configuration, saving results in batches.
+    Results include a Feather file for scalar data and compressed NumPy files for sparse matrices.
 
     Parameters
     ----------
@@ -39,8 +37,8 @@ def simulate(
         Total number of shots to simulate for this configuration.
     p : float
         Physical error probability.
-    n : int
-        Number of qubits.
+    d : int
+        Code distance.
     T : int
         Number of rounds.
     data_dir : str
@@ -53,10 +51,6 @@ def simulate(
         Number of shots to simulate and save per batch file.
     decoder_prms : Dict[str, Any], optional
         Parameters for the SoftOutputsBpLsdDecoder.
-    compute_logical_gap_proxy : bool, optional
-        Whether to compute logical gap proxy. Defaults to False.
-    include_cluster_stats : bool, optional
-        Whether to include cluster statistics. Defaults to True.
 
     Returns
     -------
@@ -64,7 +58,7 @@ def simulate(
         This function writes results to files and prints status messages.
     """
     # Create subdirectory path based on parameters
-    sub_dirname = f"n{n}_T{T}_p{p}"
+    sub_dirname = f"d{d}_T{T}_p{p}"
     sub_data_dir = os.path.join(data_dir, sub_dirname)
     os.makedirs(sub_data_dir, exist_ok=True)
 
@@ -73,20 +67,22 @@ def simulate(
 
     if total_existing >= shots:
         print(
-            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}, T={T} in {sub_dirname}."
+            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, d={d}, T={T} in {sub_dirname}."
         )
         return
 
     remaining = shots - total_existing
     print(
-        f"\nNeed to simulate {remaining} more shots for p={p}, n={n}, T={T} into {sub_dirname}"
+        f"\nNeed to simulate {remaining} more shots for p={p}, d={d}, T={T} into {sub_dirname}"
     )
 
-    # Create the circuit once for this (p, n, T) configuration
-    circuit = build_BB_circuit(p=p, n=n, T=T)
+    # Create the circuit once for this (p, d, T) configuration
+    circuit = build_color_code_circuit(
+        p=p, d=d, T=T, noise="circuit-level", only_z_detectors=True
+    )
 
     # Save prior probabilities if not exists
-    prior_path = os.path.join(sub_data_dir, "priors.npy")
+    prior_path = os.path.join(sub_data_dir, "prior.npy")
     if not os.path.exists(prior_path):
         decoder = SoftOutputsBpLsdDecoder(circuit=circuit)
         np.save(prior_path, decoder.priors)
@@ -110,7 +106,7 @@ def simulate(
 
         t0_batch = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, n={n}, T={T}. Output to: {batch_output_dir}"
+            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, d={d}, T={T}. Output to: {batch_output_dir}"
         )
 
         df_new, clusters_csr, preds_csr, preds_bp_csr = bplsd_simulation_task_parallel(
@@ -119,8 +115,6 @@ def simulate(
             n_jobs=n_jobs,
             repeat=repeat,
             decoder_prms=decoder_prms,
-            compute_logical_gap_proxy=compute_logical_gap_proxy,
-            include_cluster_stats=include_cluster_stats,
         )
 
         # Prepare filenames for this batch (now with fixed names within batch_output_dir)
@@ -137,8 +131,7 @@ def simulate(
         df_new.to_feather(fp_feather)
 
         # Save sparse matrices as compressed NPZ files
-        if clusters_csr is not None:
-            sparse.save_npz(fp_clusters, clusters_csr)
+        sparse.save_npz(fp_clusters, clusters_csr)
         sparse.save_npz(fp_preds, preds_csr)
         sparse.save_npz(fp_preds_bp, preds_bp_csr)
 
@@ -156,28 +149,19 @@ def simulate(
 
 if __name__ == "__main__":
 
+    # Simulate the color code with only Z-type detectors
+
     warnings.filterwarnings(
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [3e-3]
-    nlist = [72]  # [72, 108, 144, 288]
+    plist = [1e-3, 3e-3, 5e-3]
+    d_list = [5, 9, 13]
 
-    shots_per_batch = round(5e4)
-    total_shots = round(1e6)
-    compute_logical_gap_proxy = True
-    include_cluster_stats = False
+    shots_per_batch = round(1e7)
+    total_shots = round(1e7)
     n_jobs = 18
     repeat = 10
-    dir_name = "bb_minsum_iter30_lsd0_gapproxy"
-
-    # Estimated time (19 cores):
-    # p=1e-3, n=144: 100,000 shots/min
-    # p=3e-3, n=144: 50,000 shots/min
-    # p=5e-3, n=144: 12,500 shots/min
-    # p=1e-3, n=72: 1,000,000 shots/min
-    # p=3e-3, n=72: 500,000 shots/min
-    # p=5e-3, n=72: 250,000 shots/min
 
     decoder_prms = {
         "max_iter": 30,
@@ -187,30 +171,28 @@ if __name__ == "__main__":
     }
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, f"data/{dir_name}")
+    data_dir = os.path.join(current_dir, "data/color_minsum_iter30_lsd0_raw")
     os.makedirs(data_dir, exist_ok=True)
 
-    print("nlist =", nlist)
+    print("d_list =", d_list)
     print("plist =", plist)
     print("decoder_prms =", decoder_prms)
-    print("compute_logical_gap_proxy =", compute_logical_gap_proxy)
 
     print(f"\n==== Starting simulations up to {total_shots} shots ====")
-    for n in nlist:
-        T = get_BB_distance(n)
+    for d_val in d_list:
         for i_p, p in enumerate(plist):
+            T = d_val
+            print(f"\n--- Simulating d={d_val}, p={p}, T={T} ---")
             simulate(
                 shots=total_shots,
                 p=p,
-                n=n,
+                d=d_val,
                 T=T,
                 data_dir=data_dir,
                 n_jobs=n_jobs,
                 repeat=repeat,
                 shots_per_batch=shots_per_batch,
                 decoder_prms=decoder_prms,
-                compute_logical_gap_proxy=compute_logical_gap_proxy,
-                include_cluster_stats=include_cluster_stats,
             )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

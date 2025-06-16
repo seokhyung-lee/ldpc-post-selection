@@ -202,9 +202,13 @@ def take_best_by_from_df_ps_dict(
     return result_df[["p_fail", "delta_p_fail", "by"]]
 
 
-def load_ps_data(code: str) -> dict[str, pd.DataFrame]:
+def load_ps_data(
+    code: Union[str, List[str]],
+    prefixes: Union[str, List[str], None] = None,
+    filter: dict[str, Union[int, float]] | None = None,
+) -> dict[str, pd.DataFrame]:
     """
-    Load post-selection data for a specific code.
+    Load post-selection data for one or more codes.
 
     Reads post-selection data from the corresponding directory structure,
     where each subdirectory represents a different "by" value, and combines
@@ -213,36 +217,56 @@ def load_ps_data(code: str) -> dict[str, pd.DataFrame]:
 
     Parameters
     ----------
-    code : str
-        Code type to load data for. Must be one of 'hgp', 'surface', or 'bb'.
-        For 'surface', both 'surface' and 'surface_matching' directories are loaded.
+    code : str or list of str
+        Code type(s) to load data for. Can be a single code or a list of codes.
+    prefixes : str, list of str, or None, optional
+        Prefix(es) to apply to "by" values for dictionary keys. If None, no prefixes
+        are applied. If a single string and code is a list, the same prefix is applied
+        to all codes. If a list, must have the same length as code list.
+    filter : dict of str to int or float, optional
+        Dictionary of parameter filters. Only files whose extracted parameters
+        match all filter conditions will be processed. For example, {'n': 5, 'k': 3}
+        will only process files where parameter 'n' equals 5 and parameter 'k' equals 3.
 
     Returns
     -------
     dict of str to pandas DataFrame
-        Dictionary where keys are "by" values (or "matching_" + by for surface_matching),
-        and values are DataFrames with MultiIndex containing parameters extracted from
-        pkl filenames plus the original DataFrame index.
+        Dictionary where keys are prefixed "by" values, and values are DataFrames
+        with MultiIndex containing parameters extracted from pkl filenames plus
+        the original DataFrame index.
+
+    Raises
+    ------
+    ValueError
+        If prefixes list length doesn't match code list length, or if duplicate
+        keys would be generated.
     """
-    if code not in ["hgp", "surface", "bb"]:
+    # Normalize inputs to lists
+    if isinstance(code, str):
+        code_list = [code]
+    else:
+        code_list = list(code)
+
+    if prefixes is None:
+        prefixes_list = [""] * len(code_list)
+    elif isinstance(prefixes, str):
+        prefixes_list = [prefixes] * len(code_list)
+    else:
+        prefixes_list = list(prefixes)
+
+    # Validate inputs
+    if len(code_list) != len(prefixes_list):
         raise ValueError(
-            f"Invalid code '{code}'. Must be one of 'hgp', 'surface', 'bb'"
+            f"Length of code list ({len(code_list)}) must match length of prefixes list ({len(prefixes_list)})"
         )
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.join(current_dir, "..", "data", "post_selection")
     result_dict = {}
 
-    # Determine which directories to process
-    if code == "surface":
-        dirs_to_process = [
-            (os.path.join(base_dir, "surface"), ""),
-            (os.path.join(base_dir, "surface_matching"), "matching_"),
-        ]
-    else:
-        dirs_to_process = [(os.path.join(base_dir, code), "")]
-
-    for code_dir, prefix in dirs_to_process:
+    # Process each code-prefix pair
+    for code_name, prefix in zip(code_list, prefixes_list):
+        code_dir = os.path.join(base_dir, code_name)
         if not os.path.exists(code_dir):
             print(f"Skipping {code_dir} because it does not exist")
             continue
@@ -283,6 +307,22 @@ def load_ps_data(code: str) -> dict[str, pd.DataFrame]:
                             params[param_name] = int(param_value)
                     except ValueError:
                         params[param_name] = param_value
+
+                # Apply filter if provided
+                if filter is not None:
+                    # Check if all filter conditions are satisfied
+                    filter_satisfied = True
+                    for filter_param, filter_value in filter.items():
+                        if (
+                            filter_param not in params
+                            or params[filter_param] != filter_value
+                        ):
+                            filter_satisfied = False
+                            break
+
+                    # Skip this file if filter is not satisfied
+                    if not filter_satisfied:
+                        continue
 
                 # Load the DataFrame
                 try:
@@ -326,6 +366,13 @@ def load_ps_data(code: str) -> dict[str, pd.DataFrame]:
 
                 # Store in result dictionary with appropriate key
                 key = f"{prefix}{by_dir}"
+
+                # Check for duplicate keys
+                if key in result_dict:
+                    raise ValueError(
+                        f"Duplicate key '{key}' generated. This occurs when the same prefix+by_dir combination appears multiple times."
+                    )
+
                 result_dict[key] = combined_df
 
     return result_dict

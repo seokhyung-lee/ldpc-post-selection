@@ -6,8 +6,38 @@ import stim
 from ldpc.bplsd_decoder import BpLsdDecoder
 from pymatching import Matching
 from scipy.sparse import csc_matrix, vstack
+from scipy import sparse
 
 from .stim_tools import dem_to_parity_check
+
+
+def compute_cluster_stats(
+    clusters: np.ndarray, llrs: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute cluster statistics from cluster assignments using numpy native functions.
+
+    Parameters
+    ----------
+    clusters : 1D numpy array of int
+        Cluster assignments for each bit (0 = outside cluster, 1+ = cluster ID).
+    llrs : 1D numpy array of float
+        Log-likelihood ratios for each bit.
+
+    Returns
+    -------
+    cluster_sizes : 1D numpy array of int
+        Size of each cluster (index corresponds to cluster ID).
+    cluster_llrs : 1D numpy array of float
+        Sum of LLRs for each cluster (index corresponds to cluster ID).
+    """
+    max_cluster_id = clusters.max()
+
+    # Use bincount to efficiently compute cluster sizes and LLR sums
+    cluster_sizes = np.bincount(clusters, minlength=max_cluster_id + 1).astype(np.int_)
+    cluster_llrs = np.bincount(clusters, weights=llrs, minlength=max_cluster_id + 1)
+
+    return cluster_sizes, cluster_llrs
 
 
 class SoftOutputsDecoder:
@@ -17,7 +47,7 @@ class SoftOutputsDecoder:
 
     H: csc_matrix
     obs_matrix: Optional[csc_matrix]
-    p: np.ndarray
+    priors: np.ndarray
     circuit: Optional[stim.Circuit]
     bit_llrs: np.ndarray
     decompose_errors: bool
@@ -69,8 +99,8 @@ class SoftOutputsDecoder:
             obs_matrix = obs_matrix.astype("uint8")
 
         self.H = H
-        self.p = p
-        self.bit_llrs = np.log((1 - self.p) / self.p)
+        self.priors = p
+        self.bit_llrs = np.log((1 - self.priors) / self.priors)
         self.obs_matrix = obs_matrix
         self.circuit = circuit
 
@@ -137,7 +167,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         self._bplsd = BpLsdDecoder(
             self.H,
-            error_channel=self.p,
+            error_channel=self.priors,
             max_iter=max_iter,
             bp_method=bp_method,
             lsd_method=lsd_method,
@@ -147,9 +177,284 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         )
         self._bplsd.set_do_stats(True)
 
+    def _get_logical_classes_to_explore(
+        self,
+        predicted_logical_class: np.ndarray,
+        explore_only_nearby_logical_classes: bool,
+        verbose: bool = False,
+    ) -> List[np.ndarray]:
+        """
+        Determine logical classes to explore for gap proxy computation.
+
+        Parameters
+        ----------
+        predicted_logical_class : 1D numpy array of bool
+            Predicted logical class.
+        explore_only_nearby_logical_classes : bool
+            If True, only explore adjacent logical classes (flip one bit).
+            If False, explore all possible logical classes except the predicted one.
+        verbose : bool, optional
+            If True, print progress information. Defaults to False.
+
+        Returns
+        -------
+        logical_classes_to_explore : list of 1D numpy array of bool
+            List of logical classes to explore.
+        """
+        num_observables = len(predicted_logical_class)
+        logical_classes_to_explore = []
+
+        if verbose:
+            print(
+                f"  Getting logical classes to explore (num_observables={num_observables})"
+            )
+
+        if explore_only_nearby_logical_classes:
+            # Only adjacent logical classes (flip one bit at a time)
+            for i in range(num_observables):
+                nearby_logical_class = predicted_logical_class.copy()
+                nearby_logical_class[i] = not nearby_logical_class[i]
+                logical_classes_to_explore.append(nearby_logical_class)
+            if verbose:
+                print(
+                    f"  Exploring {len(logical_classes_to_explore)} nearby logical classes"
+                )
+        else:
+            # All possible logical classes except the predicted one
+            all_logical_classes = product([False, True], repeat=num_observables)
+            for logical_class in all_logical_classes:
+                logical_class_array = np.array(logical_class, dtype=bool)
+                if not np.array_equal(logical_class_array, predicted_logical_class):
+                    logical_classes_to_explore.append(logical_class_array)
+            if verbose:
+                print(
+                    f"  Exploring {len(logical_classes_to_explore)} total logical classes"
+                )
+
+        return logical_classes_to_explore
+
+    def _perform_fixed_logical_class_decoding(
+        self,
+        detector_outcomes: np.ndarray,
+        fixed_logical_class: np.ndarray,
+        verbose: bool = False,
+    ) -> Tuple[float, np.ndarray]:
+        """
+        Perform fixed-logical-class decoding for a given logical class.
+
+        Parameters
+        ----------
+        detector_outcomes : 1D numpy array of bool
+            Detector measurement outcomes.
+        fixed_logical_class : 1D numpy array of bool
+            Fixed logical class to decode with.
+        verbose : bool, optional
+            If True, print progress information. Defaults to False.
+
+        Returns
+        -------
+        pred_llr : float
+            Prediction LLR for the fixed logical class decoding.
+        pred : 1D numpy array of bool
+            Predicted error pattern for the fixed logical class decoding.
+        """
+        if verbose:
+            print(
+                f"    Performing fixed-logical-class decoding for class {fixed_logical_class}"
+            )
+
+        # Construct H_obs_appended by vertically stacking H and obs_matrix
+        H_obs_appended = vstack([self.H, self.obs_matrix], format="csc", dtype="uint8")
+
+        # Create new decoder with appended matrix
+        # Use same parameters as the original decoder, but no obs_matrix to avoid recursion
+        decoder_fixed = SoftOutputsBpLsdDecoder(
+            H=H_obs_appended,
+            p=self.priors,
+            obs_matrix=None,  # No observables for the fixed decoder to prevent recursion
+            max_iter=self._bplsd.max_iter,
+            bp_method=self._bplsd.bp_method,
+            lsd_method=self._bplsd.lsd_method,
+            lsd_order=self._bplsd.lsd_order,
+            ms_scaling_factor=self._bplsd.ms_scaling_factor,
+        )
+
+        # Construct detector_outcomes_obs_appended
+        detector_outcomes_obs_appended = np.concatenate(
+            [detector_outcomes, fixed_logical_class]
+        )
+
+        # Perform decoding without cluster stats computation for efficiency
+        pred_fixed, _, _, soft_outputs_fixed = decoder_fixed.decode(
+            detector_outcomes_obs_appended,
+            include_cluster_stats=False,
+            compute_logical_gap_proxy=False,  # Avoid recursion
+            verbose=False,  # Don't cascade verbose to avoid excessive output
+        )
+
+        if verbose:
+            print(
+                f"    Fixed-class decoding completed, pred_llr={soft_outputs_fixed['pred_llr']:.4f}"
+            )
+
+        return soft_outputs_fixed["pred_llr"], pred_fixed
+
+    def _compute_logical_gap_proxy(
+        self,
+        detector_outcomes: np.ndarray,
+        pred: np.ndarray,
+        original_pred_llr: float,
+        explore_only_nearby_logical_classes: bool,
+        verbose: bool = False,
+    ) -> Tuple[float, np.ndarray, float]:
+        """
+        Compute logical gap proxy by exploring different logical classes iteratively.
+
+        Parameters
+        ----------
+        detector_outcomes : 1D numpy array of bool
+            Detector measurement outcomes.
+        pred : 1D numpy array of bool
+            Original predicted error pattern.
+        original_pred_llr : float
+            Original prediction LLR.
+        explore_only_nearby_logical_classes : bool
+            Whether to explore only nearby logical classes.
+        verbose : bool, optional
+            If True, print progress information. Defaults to False.
+
+        Returns
+        -------
+        gap_proxy : float
+            Logical gap proxy (difference between minimum and second minimum pred_llr).
+        best_pred : 1D numpy array of bool
+            Best predicted error pattern (corresponding to minimum pred_llr).
+        best_pred_llr : float
+            Best prediction LLR (minimum among all explored).
+        """
+        if verbose:
+            print("  Computing logical gap proxy...")
+
+        if self.obs_matrix is None:
+            if verbose:
+                print("  No observables, returning original results")
+            return 0.0, pred, original_pred_llr
+
+        # Calculate original logical class
+        original_logical_class = (
+            (pred.astype("uint8") @ self.obs_matrix.T) % 2
+        ).astype(bool)
+
+        if verbose:
+            print(f"  Original logical class: {original_logical_class}")
+
+        # Store all explored logical classes and their results
+        explored_classes = {}  # logical_class tuple -> (pred_llr, pred_pattern)
+        explored_classes[tuple(original_logical_class)] = (original_pred_llr, pred)
+
+        # Queue for iterative exploration
+        to_explore = [original_logical_class]
+        explored_set = {tuple(original_logical_class)}
+
+        if not explore_only_nearby_logical_classes:
+            # If exploring all classes, generate them all at once
+            num_observables = len(original_logical_class)
+            all_logical_classes = list(product([False, True], repeat=num_observables))
+
+            if verbose:
+                print(f"  Exploring all {len(all_logical_classes)} logical classes")
+
+            for logical_class_tuple in all_logical_classes:
+                logical_class = np.array(logical_class_tuple, dtype=bool)
+                if tuple(logical_class) not in explored_set:
+                    if verbose:
+                        print(f"  Processing logical class {logical_class}")
+                    pred_llr, pred_pattern = self._perform_fixed_logical_class_decoding(
+                        detector_outcomes, logical_class, verbose=verbose
+                    )
+                    explored_classes[tuple(logical_class)] = (pred_llr, pred_pattern)
+        else:
+            # Iterative exploration for nearby classes only
+            iteration = 0
+            while to_explore:
+                iteration += 1
+                if verbose:
+                    print(
+                        f"  Iteration {iteration}: {len(to_explore)} classes to explore"
+                    )
+
+                current_class = to_explore.pop(0)
+
+                # Get nearby logical classes
+                nearby_classes = self._get_logical_classes_to_explore(
+                    current_class, True, verbose=False
+                )
+
+                new_best_found = False
+                current_best_llr = min(llr for llr, _ in explored_classes.values())
+
+                for logical_class in nearby_classes:
+                    logical_class_tuple = tuple(logical_class)
+                    if logical_class_tuple not in explored_set:
+                        if verbose:
+                            print(f"    Processing nearby class {logical_class}")
+
+                        pred_llr, pred_pattern = (
+                            self._perform_fixed_logical_class_decoding(
+                                detector_outcomes, logical_class, verbose=verbose
+                            )
+                        )
+                        explored_classes[logical_class_tuple] = (pred_llr, pred_pattern)
+                        explored_set.add(logical_class_tuple)
+
+                        # If this is better than current best, add it to exploration queue
+                        if pred_llr < current_best_llr:
+                            to_explore.append(logical_class)
+                            new_best_found = True
+                            current_best_llr = pred_llr
+                            if verbose:
+                                print(f"    New best found: {pred_llr:.4f}")
+
+                if verbose:
+                    print(
+                        f"  Iteration {iteration} completed, new best found: {new_best_found}"
+                    )
+
+        # Find best and second best
+        all_pred_llrs = [llr for llr, _ in explored_classes.values()]
+        all_pred_llrs.sort()
+
+        best_pred_llr = all_pred_llrs[0]
+        second_best_pred_llr = (
+            all_pred_llrs[1] if len(all_pred_llrs) > 1 else best_pred_llr
+        )
+
+        # Find the logical class corresponding to best pred_llr
+        best_logical_class_tuple = None
+        for logical_class_tuple, (pred_llr, _) in explored_classes.items():
+            if pred_llr == best_pred_llr:
+                best_logical_class_tuple = logical_class_tuple
+                break
+
+        best_pred = explored_classes[best_logical_class_tuple][1]
+        gap_proxy = second_best_pred_llr - best_pred_llr
+
+        if verbose:
+            print(f"  Total logical classes explored: {len(explored_classes)}")
+            print(f"  Best pred_llr: {best_pred_llr:.4f}")
+            print(f"  Second best pred_llr: {second_best_pred_llr:.4f}")
+            print(f"  Gap proxy: {gap_proxy:.4f}")
+            print(f"  Best logical class: {np.array(best_logical_class_tuple)}")
+
+        return gap_proxy, best_pred, best_pred_llr
+
     def decode(
         self,
         detector_outcomes: np.ndarray | List[bool | int],
+        include_cluster_stats: bool = True,
+        compute_logical_gap_proxy: bool = False,
+        explore_only_nearby_logical_classes: bool = True,
+        verbose: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray, bool, Dict[str, Any]]:
         """
         Decode the detector measurement outcomes.
@@ -158,6 +463,18 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         ----------
         detector_outcomes : 1D array-like of bool/int
             Detector measurement outcomes.
+        include_cluster_stats : bool
+            Whether to compute soft outputs related to cluster statistics.
+            Defaults to True.
+            Automatically set to False when compute_logical_gap_proxy is True.
+        compute_logical_gap_proxy : bool
+            Whether to compute logical gap proxy. Defaults to False.
+        explore_only_nearby_logical_classes : bool
+            If True, only explore adjacent logical classes for gap proxy computation.
+            If False, explore all possible logical classes. Only used when
+            compute_logical_gap_proxy is True. Defaults to True.
+        verbose : bool, optional
+            If True, print progress information. Defaults to False.
 
         Returns
         -------
@@ -171,19 +488,36 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             Soft outputs:
             - pred_llr (float): LLR of the predicted error pattern
             - detector_density (float): Fraction of violated detector outcomes
-            - cluster_sizes (numpy array of int): Sizes of clusters and the remaining
+            - clusters (1D numpy array of int): Cluster assignments of each bit (0 = outside clusters)
+            - cluster_sizes (1D numpy array of int): Sizes of clusters and the remaining
             region (cluster_sizes[-1])
-            - cluster_llrs (numpy array of float): LLRs of clusters and the remaining
+            - cluster_llrs (1D numpy array of float): LLRs of clusters and the remaining
             region (cluster_llrs[-1])
+            - gap_proxy (float): Logical gap proxy (only if compute_logical_gap_proxy=True)
         """
+        if verbose:
+            print("Starting BP+LSD decoding...")
+
+        # Prevent simultaneous use of both options to simplify the implementation
+        if compute_logical_gap_proxy:
+            include_cluster_stats = False
+
         detector_outcomes = np.asarray(detector_outcomes, dtype=bool)
         if detector_outcomes.ndim > 1:
             raise ValueError("Detector outcomes must be a 1D array")
 
+        if verbose:
+            print(f"Detector outcomes shape: {detector_outcomes.shape}")
+            print(f"Number of violated detectors: {detector_outcomes.sum()}")
+
         bplsd = self._bplsd
-        pred, pred_bp = bplsd.decode(detector_outcomes)
+        pred, pred_bp = bplsd.decode(detector_outcomes, custom=True)
         pred: np.ndarray = pred.astype(bool)
         pred_bp: np.ndarray = pred_bp.astype(bool)
+
+        if verbose:
+            print("BP+LSD decoding completed")
+            print(f"Predicted error weight: {pred.sum()}")
 
         ## Soft information
         stats: Dict[str, Any] = bplsd.statistics
@@ -191,6 +525,8 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         # Convergence
         converge = bplsd.converge
+        if verbose:
+            print(f"BP convergence: {converge}")
 
         # LLRs
         llrs = self.bit_llrs
@@ -206,104 +542,60 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             detector_outcomes
         )
 
-        # Cluster statistics
-        individual_cluster_stats_dict: Dict[int, Dict[str, Any]] = stats[
-            "individual_cluster_stats"
-        ]
+        if verbose:
+            print(f"Prediction LLR: {soft_outputs['pred_llr']:.4f}")
+            print(f"Detector density: {soft_outputs['detector_density']:.4f}")
 
-        final_cluster_bit_counts = []
-        final_cluster_llrs = []
-        # final_cluster_bp_llrs = []
-        # final_cluster_bp_llrs_plus = []
-        # total_boundary_size = 0
-        for data in individual_cluster_stats_dict.values():
-            if data.get("active", False):  # Assuming "active" key exists
-                final_cluster_bit_counts.append(int(data["final_bit_count"]))
-                final_bits = data["final_bits"]
-                final_cluster_llrs.append(llrs[final_bits].sum())
-                # final_cluster_bp_llrs.append(bp_llrs[final_bits].sum())
-                # final_cluster_bp_llrs_plus.append(bp_llrs_plus[final_bits].sum())
-                # final_bits_vector = np.zeros(self.H.shape[1], dtype=bool)
-                # final_bits_vector[final_bits] = True
-                # inside_cnt = self.H[:, final_bits_vector].getnnz(axis=1)
-                # outside_cnt = self.H[:, ~final_bits_vector].getnnz(axis=1)
-                # assert len(inside_cnt) == self.H.shape[0]
-                # total_boundary_size += np.sum((inside_cnt > 0) & (outside_cnt > 0))
+        if include_cluster_stats:
+            if verbose:
+                print("Computing cluster statistics...")
 
-        outside_bit_counts = self.H.shape[1] - np.sum(final_cluster_bit_counts)
-        outside_llrs = llrs.sum() - np.sum(final_cluster_llrs)
-        final_cluster_bit_counts.append(outside_bit_counts)
-        final_cluster_llrs.append(outside_llrs)
+            # Build cluster assignments
+            individual_cluster_stats_dict: Dict[int, Dict[str, Any]] = stats[
+                "individual_cluster_stats"
+            ]
+            clusters = np.zeros(self.H.shape[1], dtype=np.int_)
+            cluster_id = 1
+            for data in individual_cluster_stats_dict.values():
+                if data.get("active", False):  # Assuming "active" key exists
+                    final_bits = data["final_bits"]
+                    clusters[final_bits] = cluster_id
+                    cluster_id += 1
 
-        soft_outputs["cluster_sizes"] = np.array(
-            final_cluster_bit_counts, dtype=np.int_
-        )
-        soft_outputs["cluster_llrs"] = np.array(final_cluster_llrs, dtype=np.float64)
+            # Calculate cluster statistics
+            cluster_sizes, cluster_llrs = compute_cluster_stats(clusters, llrs)
 
-        assert len(final_cluster_bit_counts) == len(final_cluster_llrs)
+            soft_outputs["clusters"] = clusters  # 1D array of int
+            soft_outputs["cluster_sizes"] = cluster_sizes
+            soft_outputs["cluster_llrs"] = cluster_llrs
 
-        # soft_outputs["total_boundary_size"] = total_boundary_size
+            if verbose:
+                print(f"Number of active clusters: {cluster_id - 1}")
+                print(f"Cluster sizes: {cluster_sizes}")
 
-        # def max_or_zero(x):
-        #     return np.max(x) if x else 0
+        if compute_logical_gap_proxy:
+            if verbose:
+                print("Computing logical gap proxy...")
+            gap_proxy, best_pred, best_pred_llr = self._compute_logical_gap_proxy(
+                detector_outcomes,
+                pred,
+                soft_outputs["pred_llr"],
+                explore_only_nearby_logical_classes,
+                verbose=verbose,
+            )
+            soft_outputs["gap_proxy"] = gap_proxy
 
-        # # Cluster size sum & max cluster size
-        # soft_outputs["total_cluster_size"] = sum(final_cluster_bit_counts)
-        # soft_outputs["max_cluster_size"] = max_or_zero(final_cluster_bit_counts)
-        # soft_outputs["cluster_num"] = len(final_cluster_bit_counts)
+            # Update prediction and related soft outputs if a better one was found
+            if best_pred_llr < soft_outputs["pred_llr"]:
+                if verbose:
+                    print(
+                        f"  Updating prediction: {soft_outputs['pred_llr']:.4f} -> {best_pred_llr:.4f}"
+                    )
+                pred = best_pred
+                soft_outputs["pred_llr"] = best_pred_llr
 
-        # # LLR of final clusters
-        # soft_outputs["total_cluster_llr"] = np.sum(final_cluster_llrs)
-        # # soft_outputs["total_cluster_bp_llr"] = np.sum(final_cluster_bp_llrs)
-        # # soft_outputs["total_cluster_bp_llr_plus"] = np.sum(final_cluster_bp_llrs_plus)
-        # soft_outputs["max_cluster_llr"] = max_or_zero(final_cluster_llrs)
-        # # soft_outputs["max_cluster_bp_llr"] = max_or_zero(final_cluster_bp_llrs)
-        # # soft_outputs["max_cluster_bp_llr_plus"] = max_or_zero(
-        # #     final_cluster_bp_llrs_plus
-        # # )
-
-        # # LLR outside clusters
-        # soft_outputs["outside_cluster_llr"] = (
-        #     np.sum(llrs) - soft_outputs["total_cluster_llr"]
-        # )
-        # # soft_outputs["outside_cluster_bp_llr"] = (
-        # #     np.sum(bp_llrs) - soft_outputs["total_cluster_bp_llr"]
-        # # )
-        # # soft_outputs["outside_cluster_bp_llr_plus"] = (
-        # #     np.sum(bp_llrs_plus) - soft_outputs["total_cluster_bp_llr_plus"]
-        # # )
-
-        # if norm_orders is not None:
-        #     # Ensure norm_orders is a list
-        #     if isinstance(norm_orders, (int, float)):
-        #         norm_orders = [norm_orders]
-
-        #     final_cluster_llrs_arr = np.array(final_cluster_llrs, dtype="float64")
-        #     # final_cluster_bp_llrs_plus_arr = np.array(
-        #     #     final_cluster_bp_llrs_plus, dtype="float64"
-        #     # )
-
-        #     # Calculate all {alpha}-norms of LLRs of final clusters in a vectorized way
-        #     norm_vals = np.power(
-        #         np.sum(
-        #             np.power(
-        #                 final_cluster_llrs_arr.reshape(-1, 1),
-        #                 np.array(norm_orders).reshape(1, -1),
-        #             ),
-        #             axis=0,
-        #         ),
-        #         1 / np.array(norm_orders),
-        #     )
-
-        #     # Assign each norm value to its corresponding key in soft_outputs
-        #     for i, alpha in enumerate(norm_orders):
-        #         soft_outputs[f"cluster_llr_{alpha}_norm"] = norm_vals[i]
-
-        #         # {alpha}-norm of BP+ LLRs of final clusters
-        #         # norm_val_bp_plus = np.power(
-        #         #     np.sum(np.power(final_cluster_bp_llrs_plus_arr, alpha)), 1 / alpha
-        #         # )
-        #         # soft_outputs[f"cluster_bp_llr_plus_{alpha}_norm"] = norm_val_bp_plus
+        if verbose:
+            print("BP+LSD decoding process completed!")
 
         return pred, pred_bp, converge, soft_outputs
 
@@ -348,12 +640,13 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
             )
 
         H_obss_as_dets = vstack([self.H, self.obs_matrix], format="csc", dtype="uint8")
-        weights = np.log((1 - self.p) / self.p)
+        weights = np.log((1 - self.priors) / self.priors)
         self._matching = Matching(H_obss_as_dets, weights=weights)
 
     def decode(
         self,
         detector_outcomes: np.ndarray | List[bool | int],
+        verbose: bool = False,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         Decode the detector measurement outcomes for a single sample.
@@ -362,6 +655,8 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
         ----------
         detector_outcomes : 1D numpy array or list of bool/int
             Detector measurement outcomes for a single sample.
+        verbose : bool, optional
+            If True, print progress information. Defaults to False.
 
         Returns
         -------
@@ -374,12 +669,24 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
             - "gap" (float): Difference between the LLRs of the best and the second best
                 predictions in different logical classes.
         """
+        if verbose:
+            print("Starting PyMatching decoding...")
+
         detector_outcomes = np.asarray(detector_outcomes, dtype=bool)
         if detector_outcomes.ndim > 1:
             raise ValueError("Detector outcomes must be a 1D array")
 
+        if verbose:
+            print(f"Detector outcomes shape: {detector_outcomes.shape}")
+            print(f"Number of violated detectors: {detector_outcomes.sum()}")
+
         all_obs_values = product([False, True], repeat=self.obs_matrix.shape[0])
         all_obs_values = np.array(list(all_obs_values), dtype=bool)
+
+        if verbose:
+            print(
+                f"Number of observable patterns to explore: {all_obs_values.shape[0]}"
+            )
 
         repeated_detector_outcomes = np.tile(
             detector_outcomes, (all_obs_values.shape[0], 1)
@@ -389,6 +696,9 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
         )
 
         matching = self._matching
+
+        if verbose:
+            print("Running PyMatching decode_batch...")
 
         preds_all_obs, weights_all_obs = matching.decode_batch(
             det_outcomes_with_obs, return_weights=True
@@ -411,11 +721,18 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
             "gap": float(gap),
         }
 
+        if verbose:
+            print(f"Best prediction LLR: {pred_llr:.4f}")
+            print(f"Gap (second best - best): {gap:.4f}")
+            print(f"Predicted error weight: {pred.sum()}")
+            print("PyMatching decoding completed!")
+
         return pred, soft_outputs
 
     def decode_batch(
         self,
         detector_outcomes: np.ndarray,
+        verbose: bool = False,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         Decode a batch of detector measurement outcomes.
@@ -424,6 +741,8 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
         ----------
         detector_outcomes : 2D numpy array of bool/int
             Detector measurement outcomes. Each row is a sample.
+        verbose : bool, optional
+            If True, print progress information. Defaults to False.
 
         Returns
         -------
@@ -432,6 +751,9 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
         soft_outputs : Dict[str, np.ndarray]
             See `decode` for details.
         """
+        if verbose:
+            print("Starting PyMatching batch decoding...")
+
         if detector_outcomes.ndim != 2:
             raise ValueError("Detector outcomes must be a 2D array for batch decoding.")
 
@@ -442,11 +764,18 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
                 f"H matrix ({self.H.shape[0]})."
             )
 
+        if verbose:
+            print(f"Batch size: {num_samples}")
+            print(f"Number of detectors: {num_detectors}")
+
         num_observables = self.obs_matrix.shape[0]
         all_obs_values = np.array(
             list(product([False, True], repeat=num_observables)), dtype=bool
         )
         num_obs_patterns = all_obs_values.shape[0]
+
+        if verbose:
+            print(f"Number of observable patterns per sample: {num_obs_patterns}")
 
         # Repeat each sample for all observable patterns
         repeated_detector_outcomes = np.repeat(
@@ -461,6 +790,12 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
             [repeated_detector_outcomes, tiled_obs_values], axis=1
         )
 
+        if verbose:
+            print(
+                f"Total batch size for decoding: {det_outcomes_with_obs_batch.shape[0]}"
+            )
+            print("Running PyMatching decode_batch...")
+
         matching = self._matching
         preds_all_obs_batch, weights_all_obs_batch = matching.decode_batch(
             det_outcomes_with_obs_batch, return_weights=True
@@ -468,6 +803,9 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
 
         preds_all_obs_batch = preds_all_obs_batch.astype(bool)
         weights_all_obs_batch = weights_all_obs_batch.astype("float64")
+
+        if verbose:
+            print("Processing batch results...")
 
         # Reshape to (num_samples, num_obs_patterns, ...)
         preds_all_obs_reshaped = preds_all_obs_batch.reshape(
@@ -504,5 +842,13 @@ class SoftOutputsMatchingDecoder(SoftOutputsDecoder):
             "detector_density": detector_density_batch,
             "gap": gaps_batch,
         }
+
+        if verbose:
+            print(f"Average prediction LLR: {pred_llrs_batch.mean():.4f}")
+            print(f"Average gap: {gaps_batch.mean():.4f}")
+            print(
+                f"Average predicted error weight: {preds_batch.sum(axis=1).mean():.2f}"
+            )
+            print("PyMatching batch decoding completed!")
 
         return preds_batch, soft_outputs

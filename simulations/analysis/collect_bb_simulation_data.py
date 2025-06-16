@@ -25,8 +25,25 @@ if __name__ == "__main__":
     process_dataset(
         data_dir=data_dir,
         dataset_name="bb",
+        dataset_type="bb",
         ascending_confidences=ascending_confidences,
         orders=orders,
+        num_hist_bins=num_hist_bins,
+        verbose=False,
+    )
+
+    ascending_confidences = {"gap_proxy": True}
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(current_dir, "../data/bb_minsum_iter30_lsd0_gapproxy")
+
+    # Process BB code data
+    print("Processing BB code data...")
+    process_dataset(
+        data_dir=data_dir,
+        dataset_name="bb_gapproxy",
+        dataset_type="bb",
+        ascending_confidences=ascending_confidences,
         num_hist_bins=num_hist_bins,
         verbose=False,
     )

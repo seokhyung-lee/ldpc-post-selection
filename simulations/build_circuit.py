@@ -1,9 +1,13 @@
 import stim
 
+from color_code_stim import ColorCode
+
 from src.ldpc_post_selection.ext.SlidingWindowDecoder.src.build_circuit import (
     build_circuit as build_BB_circuit_swd,
 )
-from src.ldpc_post_selection.ext.SlidingWindowDecoder.src.codes_q import create_bivariate_bicycle_codes
+from src.ldpc_post_selection.ext.SlidingWindowDecoder.src.codes_q import (
+    create_bivariate_bicycle_codes,
+)
 from src.ldpc_post_selection.stim_tools import remove_detectors_from_circuit
 
 
@@ -60,6 +64,59 @@ def build_surface_code_circuit(
             if (round(x) + round(y)) % 4 == 2:
                 det_ids_to_remove.append(det_id)
         circuit = remove_detectors_from_circuit(circuit, det_ids_to_remove)
+
+    return circuit
+
+
+def build_color_code_circuit(
+    *,
+    d: int,
+    T: int,
+    p: float = 0.0,
+    noise: str = "circuit-level",
+    only_z_detectors: bool = False,
+    comparative_decoding: bool = False,
+) -> stim.Circuit:
+    """
+    Build a stim circuit for a color code.
+
+    Parameters
+    ----------
+    d : int
+        The code distance.
+    T : int
+        The number of measurement rounds.
+    p : float, default=0.0
+        The physical error rate.
+    noise : str, default="circuit-level"
+        The noise model type. Can be either "circuit-level" or "code-capacity".
+    only_z_detectors : bool, default=False
+        Whether to only include Z-type detectors.
+    comparative_decoding : bool, default=False
+        Whether to use comparative decoding.
+
+    Returns
+    -------
+    stim.Circuit
+        The generated stim circuit.
+    """
+    if noise in {"circuit-level", "circuit_level"}:
+        p_circuit = p
+        p_depol = 0
+    elif noise in {"code-capacity", "code_capacity"}:
+        p_circuit = 0
+        p_depol = p
+    else:
+        raise ValueError(f"Invalid noise type: {noise}")
+    cc = ColorCode(
+        d=d,
+        rounds=T,
+        p_circuit=p_circuit,
+        p_bitflip=p_depol * 2 / 3,
+        comparative_decoding=comparative_decoding,
+        exclude_non_essential_pauli_detectors=only_z_detectors,
+    )
+    circuit = cc.circuit
 
     return circuit
 

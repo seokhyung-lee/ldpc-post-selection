@@ -13,12 +13,11 @@ from simulations.simulation_utils import (
     _calculate_chunk_sizes,
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
-    _handle_empty_shot_chunks,
     get_existing_shots,
-    task,
-    task_matching,
+    bplsd_simulation_task_single,
+    matching_simulation_task_single,
     task_matching_parallel,
-    task_parallel,
+    bplsd_simulation_task_parallel,
 )
 
 
@@ -100,35 +99,6 @@ def test_get_optimal_uint_dtype(max_val, expected_dtype):
 )
 def test_calculate_chunk_sizes(shots, n_jobs, repeat, expected_chunks):
     assert _calculate_chunk_sizes(shots, n_jobs, repeat) == expected_chunks
-
-
-@pytest.mark.parametrize(
-    "shots, chunk_sizes, columns, expect_df, expected_cols",
-    [
-        (0, [], ["a", "b"], True, ["a", "b"]),  # 0 shots
-        (10, [], ["a"], True, ["a"]),  # No chunks but shots > 0
-        (10, [5, 5], ["a"], False, []),  # Valid chunks
-    ],
-)
-def test_handle_empty_shot_chunks(
-    shots, chunk_sizes, columns, expect_df, expected_cols
-):
-    result = _handle_empty_shot_chunks(shots, chunk_sizes, columns)
-    if expect_df:
-        assert isinstance(result, pd.DataFrame)
-        assert list(result.columns) == expected_cols
-        assert len(result) == 0
-        # Check dtypes if columns are standard
-        if (
-            "fail" in columns
-        ):  # Assuming standard columns for type check if 'fail' is present
-            df_expected_types = _convert_df_dtypes_for_feather(
-                pd.DataFrame(columns=columns).copy()
-            )
-            for col in expected_cols:
-                assert result[col].dtype == df_expected_types[col].dtype
-    else:
-        assert result is None
 
 
 # Tests for get_existing_shots
@@ -249,16 +219,15 @@ def test_task_bplsd_basic(sample_stim_circuit):
         fails_bp,
         converges,
         scalar_soft_infos,
-        cluster_sizes_list,
-        cluster_llrs_list,
-    ) = task(shots, circuit, decoder_prms=decoder_prms)
+        clusters_csr,
+        preds_csr,
+        preds_bp_csr,
+    ) = bplsd_simulation_task_single(shots, circuit, decoder_prms=decoder_prms)
 
     assert len(fails) == shots
     assert len(fails_bp) == shots
     assert len(converges) == shots
     assert len(scalar_soft_infos) == shots
-    assert len(cluster_sizes_list) == shots
-    assert len(cluster_llrs_list) == shots
 
     assert fails.dtype == bool
     assert fails_bp.dtype == bool
@@ -273,16 +242,10 @@ def test_task_bplsd_basic(sample_stim_circuit):
         )  # Can be None if no errors
         assert isinstance(info["detector_density"], float)
 
-    for cs_arr in cluster_sizes_list:
-        assert isinstance(cs_arr, np.ndarray)
-        # cs_arr can be empty if no clusters found
-        if cs_arr.size > 0:
-            assert cs_arr.dtype == int  # Based on decoder output
-
-    for cl_arr in cluster_llrs_list:
-        assert isinstance(cl_arr, np.ndarray)
-        if cl_arr.size > 0:
-            assert cl_arr.dtype == float  # Based on decoder output
+    # Check sparse arrays
+    assert clusters_csr is None or hasattr(clusters_csr, "toarray")  # CSR array or None
+    assert hasattr(preds_csr, "toarray")  # CSR array
+    assert hasattr(preds_bp_csr, "toarray")  # CSR array
 
 
 def test_task_bplsd_zero_shots(sample_stim_circuit):
@@ -293,16 +256,15 @@ def test_task_bplsd_zero_shots(sample_stim_circuit):
         fails_bp,
         converges,
         scalar_soft_infos,
-        cluster_sizes_list,
-        cluster_llrs_list,
-    ) = task(shots, circuit)
+        clusters_csr,
+        preds_csr,
+        preds_bp_csr,
+    ) = bplsd_simulation_task_single(shots, circuit)
 
     assert len(fails) == 0
     assert len(fails_bp) == 0
     assert len(converges) == 0
     assert len(scalar_soft_infos) == 0
-    assert len(cluster_sizes_list) == 0
-    assert len(cluster_llrs_list) == 0
 
 
 def test_task_parallel_bplsd_basic(sample_stim_circuit):
@@ -312,7 +274,7 @@ def test_task_parallel_bplsd_basic(sample_stim_circuit):
     repeat = 2
     decoder_prms = {"bp_method": "ms", "ms_scaling_factor": 0.6}
 
-    df, flat_cs, flat_cl, offsets = task_parallel(
+    df, clusters_csr, preds_csr, preds_bp_csr = bplsd_simulation_task_parallel(
         shots, circuit, n_jobs, repeat, decoder_prms=decoder_prms
     )
 
@@ -328,34 +290,21 @@ def test_task_parallel_bplsd_basic(sample_stim_circuit):
     assert df["pred_llr"].dtype == np.float32
     assert df["detector_density"].dtype == np.float32
 
-    assert isinstance(flat_cs, np.ndarray)
-    assert isinstance(flat_cl, np.ndarray)
-    assert isinstance(offsets, np.ndarray)
-
-    assert len(offsets) == shots + 1
-    assert offsets[0] == 0
-    assert offsets[-1] == len(flat_cs)
-    assert offsets[-1] == len(flat_cl)
-    if flat_cs.size > 0:
-        assert flat_cs.dtype == int
-    if flat_cl.size > 0:
-        assert flat_cl.dtype == float
+    # Check that these are sparse CSR arrays
+    assert clusters_csr is None or hasattr(clusters_csr, "toarray")
+    assert hasattr(preds_csr, "toarray")
+    assert hasattr(preds_bp_csr, "toarray")
 
 
 def test_task_parallel_bplsd_zero_shots(sample_stim_circuit):
     shots = 0
     circuit = sample_stim_circuit
-    df, flat_cs, flat_cl, offsets = task_parallel(shots, circuit, 1, 1)
 
-    assert len(df) == 0
-    expected_cols = ["fail", "fail_bp", "converge", "pred_llr", "detector_density"]
-    for col in expected_cols:
-        assert col in df.columns  # Columns should still exist
-
-    assert len(flat_cs) == 0
-    assert len(flat_cl) == 0
-    assert len(offsets) == 1
-    assert offsets[0] == 0
+    # This should raise ValueError because shots must be > 0
+    with pytest.raises(
+        ValueError, match="Total number of shots to simulate must be greater than 0"
+    ):
+        bplsd_simulation_task_parallel(shots, circuit, 1, 1)
 
 
 # Tests for task_matching and task_matching_parallel (SoftOutputsMatchingDecoder)
@@ -366,7 +315,9 @@ def test_task_matching_basic(sample_stim_circuit):
     # other than what's derived from circuit.
     decoder_prms = None
 
-    fails, scalar_soft_infos = task_matching(shots, circuit, decoder_prms=decoder_prms)
+    fails, scalar_soft_infos = matching_simulation_task_single(
+        shots, circuit, decoder_prms=decoder_prms
+    )
 
     assert len(fails) == shots
     assert len(scalar_soft_infos) == shots
@@ -385,7 +336,7 @@ def test_task_matching_basic(sample_stim_circuit):
 def test_task_matching_zero_shots(sample_stim_circuit):
     shots = 0
     circuit = sample_stim_circuit
-    fails, scalar_soft_infos = task_matching(shots, circuit)
+    fails, scalar_soft_infos = matching_simulation_task_single(shots, circuit)
 
     assert len(fails) == 0
     assert len(scalar_soft_infos) == 0

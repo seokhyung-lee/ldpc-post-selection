@@ -1,6 +1,7 @@
 import numba
 import numpy as np
-from typing import Tuple
+from typing import Tuple, List
+from scipy.sparse import csr_matrix
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -321,8 +322,104 @@ def _calculate_histograms_matching_numba(
     return (total_counts_hist, fail_counts_hist)
 
 
+def calculate_cluster_metrics_from_csr(
+    clusters: csr_matrix,
+    method: str,
+    priors: np.ndarray | None = None,
+    norm_order: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    """
+    Calculate various cluster metrics from a CSR sparse matrix representation.
+
+    Parameters
+    ----------
+    clusters : scipy sparse CSR matrix
+        Sparse matrix where rows represent samples and columns represent bits.
+        Non-zero values contain cluster IDs, with 0 representing outside clusters.
+    method : str
+        The calculation method to use.
+    priors : 1D numpy array of float, optional
+        Prior probabilities for each bit position. Required for "inv_entropy" and "inv_prior_sum".
+    bit_llrs : 1D numpy array of float, optional
+        Log-likelihood ratios for each bit position. Required for "norm".
+    norm_order : float, default 2.0
+        The order p for the L_p norm calculation (can be np.inf). Only used for "norm".
+
+    Returns
+    -------
+    result : tuple[np.ndarray, np.ndarray] | np.ndarray
+        For "norm": tuple of (inside_norms, outside_values)
+        For "inv_entropy" or "inv_prior_sum": single array of calculated values
+
+    Raises
+    ------
+    ValueError
+        If invalid method is specified or required parameters are missing.
+    """
+    num_samples, num_bits = clusters.shape
+
+    if method in ["norm", "llr_norm"]:
+        bit_llrs = np.log((1 - priors) / priors)
+        calculate_llrs = method == "llr_norm"
+
+        if clusters.nnz == 0:
+            total_outside = np.sum(bit_llrs) if calculate_llrs else float(num_bits)
+            return np.zeros(num_samples), np.full(num_samples, total_outside)
+
+        max_cluster_id = int(clusters.data.max()) if clusters.nnz > 0 else 0
+
+        return _numba_cluster_norm_kernel(
+            clusters.data,
+            clusters.indices,
+            clusters.indptr,
+            num_samples,
+            num_bits,
+            max_cluster_id,
+            bit_llrs,
+            norm_order,
+            calculate_llrs,
+        )
+
+    elif "inv_entropy" in method:
+        if priors is None:
+            raise ValueError("priors is required for inv_entropies calculation")
+
+        if clusters.nnz == 0:
+            return np.zeros(num_samples, dtype=np.float64)
+
+        return _numba_inv_entropy_kernel(
+            clusters.data,
+            clusters.indices,
+            clusters.indptr,
+            num_samples,
+            num_bits,
+            priors,
+        )
+
+    elif "inv_prior_sum" in method:
+        if priors is None:
+            raise ValueError("priors is required for inv_priors calculation")
+
+        if clusters.nnz == 0:
+            return np.zeros(num_samples, dtype=np.float64)
+
+        return _numba_inv_priors_kernel(
+            clusters.data,
+            clusters.indices,
+            clusters.indptr,
+            num_samples,
+            num_bits,
+            priors,
+        )
+
+    else:
+        raise ValueError(
+            f"Invalid method: {method}. Must be one of 'norms', 'inv_entropies', 'inv_priors'"
+        )
+
+
 @numba.njit(parallel=True, fastmath=True, cache=True)
-def _calculate_norms_for_samples(
+def _calculate_cluster_norms_from_flat_data_numba(
     flat_data: np.ndarray,  # Any numeric array type
     offsets: np.ndarray,  # Any numeric array type (will be converted to int)
     norm_order: float,
@@ -435,3 +532,343 @@ def _calculate_norms_for_samples(
             norms[i] = sum_pow**inv_norm_order
 
     return norms, outside
+
+
+@numba.njit(fastmath=True, cache=True)
+def _numba_cluster_norm_kernel(
+    data: np.ndarray,
+    indices: np.ndarray,
+    indptr: np.ndarray,
+    num_samples: int,
+    num_bits: int,
+    max_cluster_id: int,
+    bit_llrs: np.ndarray,
+    norm_order: float,
+    calculate_llrs: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Core JIT-compiled function for calculating cluster norms from CSR matrix components.
+
+    Parameters
+    ----------
+    data : 1D numpy array of float
+        CSR matrix data array containing cluster IDs.
+    indices : 1D numpy array of int
+        CSR matrix indices array containing bit positions.
+    indptr : 1D numpy array of int
+        CSR matrix index pointer array for sample boundaries.
+    num_samples : int
+        Number of samples (rows) in the CSR matrix.
+    num_bits : int
+        Number of bits (columns) in the CSR matrix.
+    max_cluster_id : int
+        Maximum cluster ID present in the data.
+    bit_llrs : 1D numpy array of float
+        Log-likelihood ratios for each bit position.
+    norm_order : float
+        The order p for the L_p norm calculation.
+    calculate_llrs : bool
+        If True, use LLR values; if False, use counts.
+
+    Returns
+    -------
+    inside_norms : 1D numpy array of float
+        Calculated L_p norms for inside cluster values of each sample.
+    outside_values : 1D numpy array of float
+        Sum of LLRs or counts for outside cluster values of each sample.
+    """
+    inside_norms = np.zeros(num_samples, dtype=np.float64)
+    outside_values = np.zeros(num_samples, dtype=np.float64)
+
+    for i in range(num_samples):
+        start_idx = indptr[i]
+        end_idx = indptr[i + 1]
+
+        # Calculate outside values (matching original logic)
+        outside_count = 0
+        outside_llr_sum = 0.0
+        positions_stored = np.zeros(num_bits, dtype=np.uint8)
+
+        # First pass: mark stored positions and count explicit zeros
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            bit_pos = int(indices[data_idx])
+
+            if bit_pos < num_bits:
+                positions_stored[bit_pos] = 1
+
+                if cluster_id == 0:
+                    # Explicit outside cluster
+                    outside_count += 1
+                    if calculate_llrs and bit_pos < len(bit_llrs):
+                        outside_llr_sum += bit_llrs[bit_pos]
+
+        # Second pass: count implicit zeros (positions not stored)
+        for bit_pos in range(num_bits):
+            if positions_stored[bit_pos] == 0:
+                # Implicit outside cluster (not stored = cluster_id 0)
+                outside_count += 1
+                if calculate_llrs and bit_pos < len(bit_llrs):
+                    outside_llr_sum += bit_llrs[bit_pos]
+
+        if calculate_llrs:
+            outside_values[i] = outside_llr_sum
+        else:
+            outside_values[i] = outside_count
+
+        # Skip if no data for this sample
+        if end_idx <= start_idx:
+            continue
+
+        # Find maximum cluster ID to allocate arrays for this sample
+        sample_max_cluster_id = 0
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            if cluster_id > sample_max_cluster_id:
+                sample_max_cluster_id = cluster_id
+
+        # Skip if no inside clusters (all cluster_id == 0)
+        if sample_max_cluster_id == 0:
+            continue
+
+        # Use arrays for Numba compatibility
+        cluster_sums = np.zeros(sample_max_cluster_id + 1, dtype=np.float64)
+
+        # Count clusters and calculate sums
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            bit_pos = int(indices[data_idx])
+
+            if cluster_id > 0:
+                if calculate_llrs and bit_pos < len(bit_llrs):
+                    cluster_sums[cluster_id] += bit_llrs[bit_pos]
+                elif not calculate_llrs:
+                    cluster_sums[cluster_id] += 1.0
+
+        # Calculate norm for inside clusters
+        norm_val = 0.0
+        if norm_order == 1.0:
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                norm_val += abs(cluster_sums[cluster_id])
+        elif norm_order == 2.0:
+            sum_sq = 0.0
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                val = cluster_sums[cluster_id]
+                sum_sq += val * val
+            norm_val = np.sqrt(sum_sq)
+        elif np.isinf(norm_order):
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                abs_val = abs(cluster_sums[cluster_id])
+                if abs_val > norm_val:
+                    norm_val = abs_val
+        elif norm_order == 0.5:
+            sum_sqrt = 0.0
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                if cluster_sums[cluster_id] > 0:
+                    sum_sqrt += np.sqrt(abs(cluster_sums[cluster_id]))
+            norm_val = sum_sqrt * sum_sqrt
+        else:  # Generic case
+            sum_pow = 0.0
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                if cluster_sums[cluster_id] > 0:
+                    sum_pow += abs(cluster_sums[cluster_id]) ** norm_order
+            norm_val = sum_pow ** (1.0 / norm_order)
+
+        inside_norms[i] = norm_val
+
+    return inside_norms, outside_values
+
+
+def _calculate_cluster_norms_from_csr_numba(
+    clusters: csr_matrix, bit_llrs: np.ndarray, norm_order: float, calculate_llrs: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate cluster norms from a CSR sparse matrix representation of clusters.
+
+    This is a backward compatibility wrapper for the unified function.
+    """
+    return calculate_cluster_metrics_from_csr(
+        clusters,
+        "norm",
+        bit_llrs=bit_llrs,
+        norm_order=norm_order,
+        calculate_llrs=calculate_llrs,
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def _numba_inv_entropy_kernel(
+    data: np.ndarray,
+    indices: np.ndarray,
+    indptr: np.ndarray,
+    num_samples: int,
+    num_bits: int,
+    priors: np.ndarray,
+) -> np.ndarray:
+    """
+    Core JIT-compiled function for calculating cluster inverse entropy sums from CSR
+    matrix components.
+
+    Parameters
+    ----------
+    data : 1D numpy array of float
+        CSR matrix data array containing cluster IDs.
+    indices : 1D numpy array of int
+        CSR matrix indices array containing bit positions.
+    indptr : 1D numpy array of int
+        CSR matrix index pointer array for sample boundaries.
+    num_samples : int
+        Number of samples (rows) in the CSR matrix.
+    num_bits : int
+        Number of bits (columns) in the CSR matrix.
+    priors : 1D numpy array of float
+        Prior probabilities for each bit position.
+
+    Returns
+    -------
+    cluster_inv_entropy_sums : 1D numpy array of float
+        Sum of inverse entropies for all inside clusters for each sample.
+    """
+    cluster_inv_entropy_sums = np.zeros(num_samples, dtype=np.float64)
+
+    for i in range(num_samples):
+        start_idx = indptr[i]
+        end_idx = indptr[i + 1]
+
+        # Skip if no data for this sample
+        if end_idx <= start_idx:
+            continue
+
+        # Find maximum cluster ID for this sample
+        sample_max_cluster_id = 0
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            if cluster_id > sample_max_cluster_id:
+                sample_max_cluster_id = cluster_id
+
+        # Skip if no inside clusters (all cluster_id == 0)
+        if sample_max_cluster_id == 0:
+            continue
+
+        # Calculate entropy sum for each inside cluster
+        for cluster_id in range(1, sample_max_cluster_id + 1):
+            inv_entropy_sum = 0.0
+
+            # Sum entropies of bits in this cluster
+            for data_idx in range(start_idx, end_idx):
+                if int(data[data_idx]) == cluster_id:
+                    bit_pos = int(indices[data_idx])
+                    if bit_pos < len(priors):
+                        p = priors[bit_pos]
+                        # Clamp probability to avoid log(0)
+                        if p <= 0.0:
+                            p = 1e-15
+                        elif p >= 1.0:
+                            p = 1.0 - 1e-15
+
+                        # Calculate entropy: -p * log(p) - (1-p) * log(1-p)
+                        inv_entropy = 1 / (-p * np.log(p) - (1.0 - p) * np.log(1.0 - p))
+                        inv_entropy_sum += inv_entropy
+
+            cluster_inv_entropy_sums[i] += inv_entropy_sum
+
+    return cluster_inv_entropy_sums
+
+
+def _calculate_cluster_inv_entropies_from_csr(
+    clusters: csr_matrix, priors: np.ndarray
+) -> np.ndarray:
+    """
+    Calculate cluster inverse entropy sums from a CSR sparse matrix representation of clusters.
+
+    This is a backward compatibility wrapper for the unified function.
+    """
+    return calculate_cluster_metrics_from_csr(clusters, "inv_entropy", priors=priors)
+
+
+@numba.njit(fastmath=True, cache=True)
+def _numba_inv_priors_kernel(
+    data: np.ndarray,
+    indices: np.ndarray,
+    indptr: np.ndarray,
+    num_samples: int,
+    num_bits: int,
+    priors: np.ndarray,
+) -> np.ndarray:
+    """
+    Core JIT-compiled function for calculating cluster inverse prior sums from CSR
+    matrix components.
+
+    Parameters
+    ----------
+    data : 1D numpy array of float
+        CSR matrix data array containing cluster IDs.
+    indices : 1D numpy array of int
+        CSR matrix indices array containing bit positions.
+    indptr : 1D numpy array of int
+        CSR matrix index pointer array for sample boundaries.
+    num_samples : int
+        Number of samples (rows) in the CSR matrix.
+    num_bits : int
+        Number of bits (columns) in the CSR matrix.
+    priors : 1D numpy array of float
+        Prior probabilities for each bit position.
+
+    Returns
+    -------
+    cluster_inv_entropy_sums : 1D numpy array of float
+        Sum of inverse prior probabilities for all inside clusters for each sample.
+    """
+    cluster_inv_prior_sums = np.zeros(num_samples, dtype=np.float64)
+
+    for i in range(num_samples):
+        start_idx = indptr[i]
+        end_idx = indptr[i + 1]
+
+        # Skip if no data for this sample
+        if end_idx <= start_idx:
+            continue
+
+        # Find maximum cluster ID for this sample
+        sample_max_cluster_id = 0
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            if cluster_id > sample_max_cluster_id:
+                sample_max_cluster_id = cluster_id
+
+        # Skip if no inside clusters (all cluster_id == 0)
+        if sample_max_cluster_id == 0:
+            continue
+
+        # Calculate entropy sum for each inside cluster
+        for cluster_id in range(1, sample_max_cluster_id + 1):
+            inv_prior_sum = 0.0
+
+            # Sum entropies of bits in this cluster
+            for data_idx in range(start_idx, end_idx):
+                if int(data[data_idx]) == cluster_id:
+                    bit_pos = int(indices[data_idx])
+                    if bit_pos < len(priors):
+                        p = priors[bit_pos]
+                        # Clamp probability to avoid log(0)
+                        if p <= 0.0:
+                            p = 1e-15
+                        elif p >= 1.0:
+                            p = 1.0 - 1e-15
+
+                        inv_prior_sum += 1 / p
+
+            cluster_inv_prior_sums[i] += inv_prior_sum
+
+    return cluster_inv_prior_sums
+
+
+def _calculate_cluster_inv_priors_from_csr(
+    clusters: csr_matrix, priors: np.ndarray
+) -> np.ndarray:
+    """
+    Calculate cluster inverse prior probability sums from a CSR sparse matrix representation of clusters.
+
+    This is a backward compatibility wrapper for the unified function.
+    """
+    return calculate_cluster_metrics_from_csr(clusters, "inv_prior_sum", priors=priors)

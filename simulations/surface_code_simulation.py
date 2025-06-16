@@ -4,12 +4,16 @@ from datetime import datetime
 from typing import Any, Dict
 
 import numpy as np
+from scipy import sparse
 
+from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 from simulations.simulation_utils import (
     _convert_df_dtypes_for_feather,
-    _get_optimal_uint_dtype,
     get_existing_shots,
-    task_parallel,
+    bplsd_simulation_task_parallel,
+)
+from simulations.simulation_utils_legacy import (
+    bplsd_simulation_task_parallel_legacy,
 )
 from simulations.build_circuit import build_surface_code_circuit
 
@@ -27,7 +31,7 @@ def simulate(
 ) -> None:
     """
     Run the simulation for a given (p, d, T) configuration, saving results in batches.
-    Results include a Feather file for scalar data and NumPy files for ragged arrays.
+    Results include a Feather file for scalar data and compressed NumPy files for sparse matrices.
 
     Parameters
     ----------
@@ -78,11 +82,12 @@ def simulate(
     circuit = build_surface_code_circuit(
         p=p, d=d, T=T, noise="circuit-level", only_z_detectors=True
     )
-    dem = circuit.detector_error_model()
 
-    # Determine dtypes for NumPy arrays using the helper function
-    cluster_size_dtype = _get_optimal_uint_dtype(dem.num_errors)
-    offset_dtype = _get_optimal_uint_dtype(dem.num_errors * shots_per_batch)
+    # Save prior probabilities if not exists
+    prior_path = os.path.join(sub_data_dir, "prior.npy")
+    if not os.path.exists(prior_path):
+        decoder = SoftOutputsBpLsdDecoder(circuit=circuit)
+        np.save(prior_path, decoder.priors)
 
     # Determine the next file index
     next_idx = (
@@ -106,7 +111,7 @@ def simulate(
             f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, d={d}, T={T}. Output to: {batch_output_dir}"
         )
 
-        df_new, flat_cluster_sizes, flat_cluster_llrs, offsets = task_parallel(
+        df_new, clusters_csr, preds_csr, preds_bp_csr = bplsd_simulation_task_parallel(
             shots=to_run,
             circuit=circuit,  # Pass the pre-built circuit
             n_jobs=n_jobs,
@@ -116,9 +121,9 @@ def simulate(
 
         # Prepare filenames for this batch (now with fixed names within batch_output_dir)
         fp_feather = os.path.join(batch_output_dir, "scalars.feather")
-        fp_cs = os.path.join(batch_output_dir, "cluster_sizes.npy")
-        fp_cl = os.path.join(batch_output_dir, "cluster_llrs.npy")
-        fp_offsets = os.path.join(batch_output_dir, "offsets.npy")
+        fp_clusters = os.path.join(batch_output_dir, "clusters.npz")
+        fp_preds = os.path.join(batch_output_dir, "preds.npz")
+        fp_preds_bp = os.path.join(batch_output_dir, "preds_bp.npz")
 
         # Convert dtypes and save
         os.makedirs(batch_output_dir, exist_ok=True)
@@ -127,9 +132,10 @@ def simulate(
         )  # Use .copy() to avoid SettingWithCopyWarning
         df_new.to_feather(fp_feather)
 
-        np.save(fp_cs, flat_cluster_sizes.astype(cluster_size_dtype))
-        np.save(fp_cl, flat_cluster_llrs.astype(np.float32))
-        np.save(fp_offsets, offsets.astype(offset_dtype))
+        # Save sparse matrices as compressed NPZ files
+        sparse.save_npz(fp_clusters, clusters_csr)
+        sparse.save_npz(fp_preds, preds_csr)
+        sparse.save_npz(fp_preds_bp, preds_bp_csr)
 
         current_simulated_for_config += to_run
         remaining -= to_run
@@ -151,10 +157,10 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-2]
-    d_list = [3, 5, 9, 13]
+    plist = [5e-3]
+    d_list = [9]
 
-    shots_per_batch = round(1e7)
+    shots_per_batch = round(1e6)
     total_shots = round(1e7)
     n_jobs = 18
     repeat = 10
@@ -167,7 +173,7 @@ if __name__ == "__main__":
     }
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "data/surface_code_minsum_iter30_lsd0")
+    data_dir = os.path.join(current_dir, "data/surface_minsum_iter30_lsd0_raw")
     os.makedirs(data_dir, exist_ok=True)
 
     print("d_list =", d_list)

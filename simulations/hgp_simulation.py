@@ -12,13 +12,15 @@ from simulations.simulation_utils import (
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
     get_existing_shots,
-    task_parallel,
+    bplsd_simulation_task_parallel,
 )
 
 
-def get_available_seeds(p: float, n: int, T: int) -> list[int]:
+def get_available_circuits(
+    p: float, n: int, k: int, d: int, T: int
+) -> list[tuple[str, str]]:
     """
-    Scan the circuits directory and return a list of available seeds for given parameters.
+    Scan the circuits directory and return a list of available circuits for given parameters.
 
     Parameters
     ----------
@@ -26,49 +28,58 @@ def get_available_seeds(p: float, n: int, T: int) -> list[int]:
         Physical error probability.
     n : int
         Number of qubits.
+    k : int
+        Number of logical qubits.
+    d : int
+        Code distance.
     T : int
         Number of rounds.
 
     Returns
     -------
-    list of int
-        List of available seed values that have corresponding circuit files.
+    list of tuple[str, str]
+        List of tuples containing (folder_name, circuit_filename_without_extension)
+        for available circuit files.
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    circuits_dir = os.path.join(current_dir, "data/hgp_circuits")
+    circuits_dir = os.path.join(current_dir, "data/hgp_prebuilt/circuits")
 
     if not os.path.exists(circuits_dir):
         return []
 
     # Create folder pattern for the given parameters
     # Expected folder format: (3,4)_n225_k9_d4_T4_p0.001
-    folder_pattern = f"*_n{n}_*_T{T}_p{p}"
-
-    available_seeds = []
+    available_circuits = []
 
     # Look for matching folders
     for item in os.listdir(circuits_dir):
         item_path = os.path.join(circuits_dir, item)
         if os.path.isdir(item_path):
             # Check if folder name matches our parameters
-            if f"_n{n}_" in item and f"_T{T}_" in item and f"_p{p}" in item:
-                # Look for seed files in this folder
+            if (
+                f"_n{n}_" in item
+                and f"_k{k}_" in item
+                and f"_d{d}_" in item
+                and f"_T{T}_" in item
+                and f"_p{p}" in item
+            ):
+                # Look for circuit files directly in the folder
                 for filename in os.listdir(item_path):
-                    if filename.startswith("seed") and filename.endswith(".stim"):
-                        # Extract seed number
-                        seed_match = re.match(r"seed(\d+)\.stim", filename)
-                        if seed_match:
-                            seed_value = int(seed_match.group(1))
-                            available_seeds.append(seed_value)
+                    if filename.endswith(".stim"):
+                        # Extract filename without extension
+                        circuit_name = filename[:-5]  # Remove .stim extension
+                        available_circuits.append((item, circuit_name))
 
-    # Remove duplicates and sort
-    available_seeds = sorted(list(set(available_seeds)))
-    return available_seeds
+    # Remove duplicates and sort by folder name then circuit name
+    available_circuits = sorted(list(set(available_circuits)))
+    return available_circuits
 
 
-def load_hgp_circuit(p: float, n: int, T: int, seed: int) -> stim.Circuit:
+def load_hgp_circuit(
+    p: float, n: int, k: int, d: int, T: int, circuit_name: str
+) -> tuple[stim.Circuit, str, str]:
     """
-    Load HGP circuit from stim file based on parameters.
+    Load HGP circuit from stim file based on parameters and circuit name.
 
     Parameters
     ----------
@@ -76,18 +87,26 @@ def load_hgp_circuit(p: float, n: int, T: int, seed: int) -> stim.Circuit:
         Physical error probability.
     n : int
         Number of qubits.
+    k : int
+        Number of logical qubits.
+    d : int
+        Code distance.
     T : int
         Number of rounds.
-    seed : int
-        Random seed for circuit generation.
+    circuit_name : str
+        Name of the circuit file without .stim extension.
 
     Returns
     -------
     stim.Circuit
         The loaded circuit from the matching stim file.
+    str
+        The folder name containing the circuit file.
+    str
+        The circuit filename without extension.
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    circuits_dir = os.path.join(current_dir, "data/hgp_circuits")
+    circuits_dir = os.path.join(current_dir, "data/hgp_prebuilt/circuits")
 
     if not os.path.exists(circuits_dir):
         raise FileNotFoundError(f"Circuits directory does not exist: {circuits_dir}")
@@ -98,33 +117,45 @@ def load_hgp_circuit(p: float, n: int, T: int, seed: int) -> stim.Circuit:
         item_path = os.path.join(circuits_dir, item)
         if os.path.isdir(item_path):
             # Check if folder name matches our parameters
-            if f"_n{n}_" in item and f"_T{T}_" in item and f"_p{p}" in item:
+            if (
+                f"_n{n}_" in item
+                and f"_k{k}_" in item
+                and f"_d{d}_" in item
+                and f"_T{T}_" in item
+                and f"_p{p}" in item
+            ):
                 matching_folder = item_path
                 break
 
     if matching_folder is None:
         raise FileNotFoundError(
-            f"No folder found with parameters n{n}, T{T}, p{p} in {circuits_dir}"
+            f"No folder found with parameters n{n}, k{k}, d{d}, T{T}, p{p} in {circuits_dir}"
         )
 
-    # Look for the specific seed file in the matching folder
-    seed_filename = f"seed{seed}.stim"
-    circuit_file = os.path.join(matching_folder, seed_filename)
+        # Look for the specific circuit file in the matching folder
+    circuit_filename = f"{circuit_name}.stim"
+    circuit_file = os.path.join(matching_folder, circuit_filename)
 
     if not os.path.exists(circuit_file):
-        raise FileNotFoundError(f"No seed file found: {circuit_file}")
+        raise FileNotFoundError(f"No circuit file found: {circuit_file}")
 
     print(f"Loading circuit from: {circuit_file}")
     circuit = stim.Circuit.from_file(circuit_file)
-    return circuit
+
+    # Extract folder name and circuit filename
+    folder_name = os.path.basename(matching_folder)
+
+    return circuit, folder_name, circuit_name
 
 
 def simulate(
     shots: int,
     p: float,
     n: int,
+    k: int,
+    d: int,
     T: int,
-    seed: int,
+    circuit_name: str,
     data_dir: str,
     n_jobs: int,
     repeat: int,
@@ -132,7 +163,7 @@ def simulate(
     decoder_prms: Dict[str, Any] | None = None,
 ) -> None:
     """
-    Run the simulation for a given (p, n, T, seed) configuration, saving results in batches.
+    Run the simulation for a given (p, n, k, d, T, circuit_name) configuration, saving results in batches.
     Results include a Feather file for scalar data and NumPy files for ragged arrays.
 
     Parameters
@@ -143,10 +174,14 @@ def simulate(
         Physical error probability.
     n : int
         Number of qubits.
+    k : int
+        Number of logical qubits.
+    d : int
+        Code distance.
     T : int
         Number of rounds.
-    seed : int
-        Random seed for circuit generation.
+    circuit_name : str
+        Name of the circuit file without .stim extension.
     data_dir : str
         Base directory to store output subdirectories.
     n_jobs : int
@@ -163,8 +198,13 @@ def simulate(
     None
         This function writes results to files and prints status messages.
     """
-    # Create subdirectory path based on parameters
-    sub_dirname = f"n{n}_T{T}_p{p}_seed{seed}"
+    # Load the circuit from stim file and get path information
+    circuit, folder_name, circuit_name_verified = load_hgp_circuit(
+        p=p, n=n, k=k, d=d, T=T, circuit_name=circuit_name
+    )
+
+    # Create subdirectory path based on circuit folder and circuit name
+    sub_dirname = os.path.join(folder_name, circuit_name_verified)
     sub_data_dir = os.path.join(data_dir, sub_dirname)
     os.makedirs(sub_data_dir, exist_ok=True)
 
@@ -173,17 +213,14 @@ def simulate(
 
     if total_existing >= shots:
         print(
-            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}, T={T}, seed={seed} in {sub_dirname}."
+            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}, k={k}, d={d}, T={T}, circuit={circuit_name} in {sub_dirname}."
         )
         return
 
     remaining = shots - total_existing
     print(
-        f"\nNeed to simulate {remaining} more shots for p={p}, n={n}, T={T}, seed={seed} into {sub_dirname}"
+        f"\nNeed to simulate {remaining} more shots for p={p}, n={n}, k={k}, d={d}, T={T}, circuit={circuit_name} into {sub_dirname}"
     )
-
-    # Load the circuit from stim file
-    circuit = load_hgp_circuit(p=p, n=n, T=T, seed=seed)
     dem = circuit.detector_error_model()
 
     # Determine dtypes for NumPy arrays using the helper function
@@ -209,15 +246,17 @@ def simulate(
 
         t0_batch = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, n={n}, T={T}, seed={seed}. Output to: {batch_output_dir}"
+            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, n={n}, k={k}, d={d}, T={T}, circuit={circuit_name}. Output to: {batch_output_dir}"
         )
 
-        df_new, flat_cluster_sizes, flat_cluster_llrs, offsets = task_parallel(
-            shots=to_run,
-            circuit=circuit,  # Pass the loaded circuit
-            n_jobs=n_jobs,
-            repeat=repeat,
-            decoder_prms=decoder_prms,
+        df_new, flat_cluster_sizes, flat_cluster_llrs, offsets = (
+            bplsd_simulation_task_parallel(
+                shots=to_run,
+                circuit=circuit,  # Pass the loaded circuit
+                n_jobs=n_jobs,
+                repeat=repeat,
+                decoder_prms=decoder_prms,
+            )
         )
 
         # Prepare filenames for this batch (now with fixed names within batch_output_dir)
@@ -257,10 +296,12 @@ if __name__ == "__main__":
 
     p = 1e-3
     n = 225
-    T = 12
+    k = 9
+    d = 6
+    T = 6
 
     shots_per_batch = round(1e6)
-    total_shots = round(1e6)
+    total_shots = round(1e7)
 
     decoder_prms = {
         "max_iter": 30,
@@ -274,26 +315,32 @@ if __name__ == "__main__":
     os.makedirs(data_dir, exist_ok=True)
 
     print(f"n = {n}")
+    print(f"k = {k}")
+    print(f"d = {d}")
     print(f"T = {T}")
     print(f"p = {p}")
     print("decoder_prms =", decoder_prms)
 
-    print(f"\n==== Starting HGP simulation up to {total_shots} shots per seed ====")
+    print(f"\n==== Starting HGP simulation up to {total_shots} shots per circuit ====")
 
-    # Get available seeds by scanning the circuits directory
-    available_seeds = get_available_seeds(p=p, n=n, T=T)
+    # Get available circuits by scanning the circuits directory
+    available_circuits = get_available_circuits(p=p, n=n, k=k, d=d, T=T)
 
-    if len(available_seeds) == 0:
-        print(f"No circuit files found for parameters p={p}, n={n}, T={T}")
+    if len(available_circuits) == 0:
+        print(
+            f"No circuit files found for parameters p={p}, n={n}, k={k}, d={d}, T={T}"
+        )
         print("Simulation aborted.")
         exit(1)
 
-    print(f"Found {len(available_seeds)} available seeds: {available_seeds}")
+    print(f"Found {len(available_circuits)} available circuits:")
+    for folder_name, circuit_name in available_circuits:
+        print(f"  {folder_name}/{circuit_name}.stim")
 
     successful_simulations = 0
-    target_successful_simulations = len(available_seeds)
+    target_successful_simulations = len(available_circuits)
 
-    for seed in available_seeds:
+    for folder_name, circuit_name in available_circuits:
         if successful_simulations >= target_successful_simulations:
             print(
                 f"\nReached target of {target_successful_simulations} successful simulations. Stopping."
@@ -301,15 +348,17 @@ if __name__ == "__main__":
             break
 
         print(
-            f"\n--- Trying seed = {seed} ({successful_simulations + 1}/{target_successful_simulations}) ---"
+            f"\n--- Trying circuit = {folder_name}/{circuit_name}.stim ({successful_simulations + 1}/{target_successful_simulations}) ---"
         )
         try:
             simulate(
                 shots=total_shots,
                 p=p,
                 n=n,
+                k=k,
+                d=d,
                 T=T,
-                seed=seed,
+                circuit_name=circuit_name,
                 data_dir=data_dir,
                 n_jobs=19,
                 repeat=10,
@@ -318,16 +367,16 @@ if __name__ == "__main__":
             )
             successful_simulations += 1
             print(
-                f"✓ Seed {seed} completed successfully. Progress: {successful_simulations}/{target_successful_simulations}"
+                f"✓ Circuit {circuit_name} completed successfully. Progress: {successful_simulations}/{target_successful_simulations}"
             )
 
         except FileNotFoundError as e:
-            print(f"✗ Seed {seed} skipped: {e}")
+            print(f"✗ Circuit {circuit_name} skipped: {e}")
         except Exception as e:
-            print(f"✗ Seed {seed} failed with error: {e}")
+            print(f"✗ Circuit {circuit_name} failed with error: {e}")
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==== HGP simulation completed ({t0}) ====")
     print(
-        f"Successfully completed {successful_simulations} simulations out of {len(available_seeds)} available seeds."
+        f"Successfully completed {successful_simulations} simulations out of {len(available_circuits)} available circuits."
     )

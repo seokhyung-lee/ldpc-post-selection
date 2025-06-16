@@ -89,22 +89,13 @@ def generate_check_matrix(
     return H
 
 
-def build_hgp_circuit(
+def compute_hgp_code_parameters(
     H1: np.ndarray,
     H2: np.ndarray,
-    p: float = 1e-3,
-    num_rounds: int = 5,
-    basis: str = "Z",
-    seed: Optional[int] = None,
-    noisy_init: bool = True,
-    noisy_meas: bool = False,
     timeout_seconds: int = 1,
-) -> Tuple[stim.Circuit, Tuple[int, int, int]]:
+) -> Tuple[HgpCode, Tuple[int, int, int]]:
     """
-    Build a hypergraph product (HGP) quantum error correction circuit.
-
-    This function creates an HGP code from two classical parity-check matrices
-    and generates the corresponding quantum error correction circuit using Stim.
+    Compute code parameters for hypergraph product (HGP) code.
 
     Parameters
     ----------
@@ -112,33 +103,68 @@ def build_hgp_circuit(
         First parity-check matrix for HGP code construction
     H2 : 2D numpy array of int
         Second parity-check matrix for HGP code construction
-    p : float
-        Physical error rate for all error mechanisms (default: 1e-3)
-    num_rounds : int
-        Number of measurement rounds (T-1) (default: 5)
-    basis : str
-        Measurement basis, either 'Z' or 'X' (default: 'Z')
-    seed : int, optional
-        Random seed for graph construction (default: None)
-    noisy_init : bool
-        Whether to include noise in initialization (default: True)
-    noisy_meas : bool
-        Whether to include noise in measurements (default: False)
     timeout_seconds : int
         Timeout for distance computation (default: 1)
 
     Returns
     -------
-    circuit : stim.Circuit
-        Quantum error correction circuit for the HGP code
+    code : HgpCode
+        HGP code object with built graph
     code_prms : tuple of ints
         (# data qubits, # logical qubits, estimated code distance)
     """
     # Create HGP code from the two parity-check matrices
     code = HgpCode(H1, H2)
-    code.build_graph(seed=seed)
 
+    # Extract number of data qubits and logical qubits
+    num_data = code.hz.shape[1]  # Number of data qubits
+    num_logical = code.lz.shape[0]  # Number of logical qubits
+
+    # Compute code distance for each classical code
+    _, _, d1 = compute_code_parameters(H1, timeout_seconds=timeout_seconds)
+    _, _, d2 = compute_code_parameters(H2, timeout_seconds=timeout_seconds)
+
+    # Take minimum distance
+    distance = min(d1, d2)
+
+    return code, (num_data, num_logical, distance)
+
+
+def build_hgp_circuit_from_code(
+    code: HgpCode,
+    p: float,
+    num_rounds: int,
+    basis: str = "Z",
+    noisy_init: bool = True,
+    noisy_meas: bool = False,
+    seed: Optional[int] = None,
+) -> stim.Circuit:
+    """
+    Build a hypergraph product (HGP) quantum error correction circuit from HgpCode.
+
+    Parameters
+    ----------
+    code : HgpCode
+        HGP code object with built graph
+    p : float
+        Physical error rate for all error mechanisms
+    num_rounds : int
+        Number of measurement rounds (T-1)
+    basis : str
+        Measurement basis, either 'Z' or 'X' (default: 'Z')
+    noisy_init : bool
+        Whether to include noise in initialization (default: True)
+    noisy_meas : bool
+        Whether to include noise in measurements (default: False)
+    seed : int, optional
+        Random seed for graph construction (default: None)
+    Returns
+    -------
+    stim.Circuit
+        Quantum error correction circuit for the HGP code
+    """
     # Generate the quantum error correction circuit
+    code.build_graph(seed=seed)
     circuit = stim.Circuit(
         get_qldpc_mem_circuit(
             code,
@@ -153,20 +179,7 @@ def build_hgp_circuit(
         )
     )
 
-    # Extract number of data qubits and logical qubits
-    num_data = code.hz.shape[1]  # Number of data qubits
-    num_logical = code.lz.shape[0]  # Number of logical qubits
-
-    # Compute code distance for each classical code
-    _, _, d1 = compute_code_parameters(H1, timeout_seconds=timeout_seconds)
-    _, _, d2 = compute_code_parameters(H2, timeout_seconds=timeout_seconds)
-
-    # Take minimum distance
-    distance = min(d1, d2)
-
-    code_prms = (num_data, num_logical, distance)
-
-    return circuit, code_prms
+    return circuit
 
 
 if __name__ == "__main__":
@@ -174,35 +187,50 @@ if __name__ == "__main__":
     n_cl = 12  # Number of variable nodes
     dv = 3  # Variable node degree
     dc = 4  # Check node degree
+    required_code_prms = (225, 9, 6)
 
     p = 1e-3
     T = 12
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    circuit_dir = os.path.join(current_dir, "data/hgp_circuits")
+    circuit_dir = os.path.join(current_dir, "data/hgp_prebuilt/circuits")
+    check_matrix_dir = os.path.join(current_dir, "data/hgp_prebuilt/check_matrices")
+    os.makedirs(circuit_dir, exist_ok=True)
+    os.makedirs(check_matrix_dir, exist_ok=True)
 
     # Generate optimized check matrix
     counts = 0
     seed = 0
     while True:
         print(f"\n====== seed = {seed} (count = {counts}) ======")
+        # Create check matrix
         H = generate_check_matrix(n_cl, dv, dc, verbose=False, seed=seed)
-        circuit, code_prms = build_hgp_circuit(H, H, p=p, num_rounds=T, seed=seed)
+        code, code_prms = compute_hgp_code_parameters(H, H)
         n, k, d = code_prms
         print(f"code_prms = {code_prms}")
-        if code_prms != (225, 9, 4):
+        if code_prms != required_code_prms:
             print("Skipped")
             seed += 1
             continue
 
-        # Create directory structure: folder_name/seed{seed}.stim
-        folder_name = f"({dv},{dc})_n{n}_k{k}_d{d}_T{T}_p{p}"
-        circuit_subdir = os.path.join(circuit_dir, folder_name)
-        os.makedirs(circuit_subdir, exist_ok=True)
+        # Save check matrix
+        check_matrix_subdir = os.path.join(
+            check_matrix_dir, f"({dv},{dc})_n{n}_k{k}_d{d}"
+        )
+        os.makedirs(check_matrix_subdir, exist_ok=True)
+        np.savetxt(os.path.join(check_matrix_subdir, f"seed{seed}.txt"), H, fmt="%d")
 
-        fname = f"seed{seed}.stim"
-        circuit.to_file(os.path.join(circuit_subdir, fname))
-        print(f"Saved: {folder_name}/{fname}")
+        # Create circuit
+        circuit = build_hgp_circuit_from_code(code, p, T)
+
+        # Save circuit
+        circuit_subdir = os.path.join(
+            circuit_dir, f"({dv},{dc})_n{n}_k{k}_d{d}_T{T}_p{p}"
+        )
+        os.makedirs(circuit_subdir, exist_ok=True)
+        circuit.to_file(os.path.join(circuit_subdir, f"seed{seed}.stim"))
+
+        print(f"Saved")
 
         counts += 1
         seed += 1

@@ -12,6 +12,8 @@ if __name__ == "__main__":
         "cluster_llr_norm": False,
         "cluster_size_norm_gap": True,
         "cluster_llr_norm_gap": True,
+        "cluster_inv_entropy": False,
+        "cluster_inv_prior_sum": False,
     }
 
     ascending_confidences_matching = {
@@ -20,21 +22,22 @@ if __name__ == "__main__":
         "gap": True,
     }
 
-    orders = [0.5, 1, 2, np.inf]
+    orders = [1]
     num_hist_bins = 10000
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "../data/surface_code_minsum_iter30_lsd0")
+    data_dir = os.path.join(current_dir, "../data/surface_minsum_iter30_lsd0_raw")
     matching_data_dir = os.path.join(current_dir, "../data/surface_code_matching")
 
     # Process regular surface code data
     print("Processing surface code data...")
     process_dataset(
         data_dir=data_dir,
-        dataset_name="surface",
+        dataset_name="surface_new",
         ascending_confidences=ascending_confidences,
         orders=orders,
         num_hist_bins=num_hist_bins,
+        dataset_type="surface",
         verbose=False,
     )
 
@@ -45,6 +48,7 @@ if __name__ == "__main__":
         dataset_name="surface_matching",
         ascending_confidences=ascending_confidences_matching,
         num_hist_bins=num_hist_bins,
+        dataset_type="surface",
         verbose=False,
     )
 

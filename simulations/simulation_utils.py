@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import stim
 from joblib import Parallel, delayed
+from scipy import sparse
 
 from src.ldpc_post_selection.decoder import (
     SoftOutputsBpLsdDecoder,
@@ -123,17 +124,20 @@ def _get_optimal_uint_dtype(max_val: int) -> np.dtype:
         return np.uint64
 
 
-def task(
+def bplsd_simulation_task_single(
     shots: int,
     circuit: stim.Circuit,
     decoder_prms: Dict[str, Any] | None = None,
+    compute_logical_gap_proxy: bool = False,
+    include_cluster_stats: bool = True,
 ) -> Tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
     List[Dict[str, float]],
-    List[np.ndarray],
-    List[np.ndarray],
+    sparse.csr_array | None,
+    sparse.csr_array,
+    sparse.csr_array,
 ]:
     """
     Run a single simulation task for a given circuit and decoder parameters.
@@ -146,7 +150,10 @@ def task(
         The pre-built quantum error correction circuit.
     decoder_prms : Dict[str, Any], optional
         Parameters for the SoftOutputsBpLsdDecoder.
-
+    compute_logical_gap_proxy : bool, optional
+        Whether to compute logical gap proxy. Defaults to False.
+    include_cluster_stats : bool, optional
+        Whether to include cluster statistics. Defaults to True.
     Returns
     -------
     fails : np.ndarray
@@ -157,13 +164,17 @@ def task(
         Boolean array indicating if the BP algorithm converged for each shot.
     scalar_soft_infos : list of dict
         List of dictionaries, each containing scalar soft information like
-        'pred_llr' and 'detector_density' for each shot.
-    cluster_sizes_list : list of np.ndarray
-        List of 1D NumPy arrays, where each array contains the cluster sizes
-        for a single shot.
-    cluster_llrs_list : list of np.ndarray
-        List of 1D NumPy arrays, where each array contains the cluster LLRs
-        for a single shot.
+        'pred_llr', 'detector_density' and 'gap_proxy' (if compute_logical_gap_proxy
+        is True) for each shot.
+    clusters_csr : scipy.sparse.csr_array or None
+        2D CSR array containing cluster information for all shots in this task.
+        Each row corresponds to one shot. Not returned if include_cluster_stats is False.
+    preds_csr : scipy.sparse.csr_array
+        2D boolean CSR array containing LSD predictions for all shots in this task.
+        Each row corresponds to one shot.
+    preds_bp_csr : scipy.sparse.csr_array
+        2D boolean CSR array containing BP predictions for all shots in this task.
+        Each row corresponds to one shot.
     """
     # circuit = build_BB_circuit(p=p, n=n, T=T) # Removed: circuit is now an argument
     sampler = circuit.compile_detector_sampler()
@@ -180,12 +191,16 @@ def task(
     preds_bp_list = []
     converges_list = []
     scalar_soft_infos_list = []  # For pred_llr, detector_density
-    cluster_sizes_list = []  # For cluster_sizes arrays
-    cluster_llrs_list = []  # For cluster_llrs arrays
+    clusters_list = []  # For clusters arrays
+
+    num_errors = decoder.H.shape[1]
+    max_cluster_idx = 0
 
     for det_sng in det:
         pred, pred_bp, converge, soft_info = decoder.decode(
             det_sng,
+            compute_logical_gap_proxy=compute_logical_gap_proxy,
+            include_cluster_stats=include_cluster_stats,
         )
 
         preds_list.append(pred)
@@ -195,14 +210,22 @@ def task(
         # Extract new soft outputs
         scalar_soft_infos_list.append(
             {
-                "pred_llr": soft_info.get("pred_llr"),
-                "detector_density": soft_info.get("detector_density"),
+                "pred_llr": soft_info["pred_llr"],
+                "detector_density": soft_info["detector_density"],
             }
         )
-        cluster_sizes_list.append(
-            soft_info.get("cluster_sizes", np.array([], dtype=int))
-        )
-        cluster_llrs_list.append(soft_info.get("cluster_llrs", np.array([])))
+        if compute_logical_gap_proxy:
+            scalar_soft_infos_list.append(
+                {
+                    "gap_proxy": soft_info["gap_proxy"],
+                }
+            )
+
+        if include_cluster_stats:
+            clusters = soft_info["clusters"]
+            max_cluster_idx = max(max_cluster_idx, clusters.max())
+            optimal_dtype = _get_optimal_uint_dtype(max_cluster_idx)
+            clusters_list.append(sparse.csr_array(clusters, dtype=optimal_dtype))
 
     converges_arr = np.array(converges_list)
 
@@ -231,25 +254,38 @@ def task(
         fails_arr = np.empty(0, dtype=bool)
         fails_bp_arr = np.empty(0, dtype=bool)
 
+    # Convert clusters_list to CSR array using vstack
+    if include_cluster_stats:
+        clusters_csr = sparse.vstack(clusters_list, format="csr")
+    else:
+        clusters_csr = None
+
+    # Convert predictions to boolean CSR arrays
+    preds_csr = sparse.csr_array(preds_arr, dtype=bool)
+    preds_bp_csr = sparse.csr_array(preds_bp_arr, dtype=bool)
+
     return (
         fails_arr,
         fails_bp_arr,
         converges_arr,
         scalar_soft_infos_list,
-        cluster_sizes_list,
-        cluster_llrs_list,
+        clusters_csr,
+        preds_csr,
+        preds_bp_csr,
     )
 
 
-def task_parallel(
+def bplsd_simulation_task_parallel(
     shots: int,
     circuit: stim.Circuit,
     n_jobs: int,
     repeat: int = 10,
     decoder_prms: Dict[str, Any] | None = None,
-) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
+    compute_logical_gap_proxy: bool = False,
+    include_cluster_stats: bool = True,
+) -> Tuple[pd.DataFrame, sparse.csr_array | None, sparse.csr_array, sparse.csr_array]:
     """
-    Run the BB `task` function in parallel and return results including flattened arrays.
+    Run the `simulation_task_single` function in parallel and return results.
 
     Parameters
     ----------
@@ -263,44 +299,40 @@ def task_parallel(
         Number of repeats for parallel execution.
     decoder_prms : Dict[str, Any], optional
         Parameters for the decoder.
+    compute_logical_gap_proxy : bool, optional
+        Whether to compute logical gap proxy. Defaults to False.
+    include_cluster_stats : bool, optional
+        Whether to include cluster statistics. Defaults to True.
 
     Returns
     -------
     df : pandas.DataFrame
         DataFrame containing boolean flags (fail, fail_bp, converge) and scalar
-        float soft outputs (pred_llr, detector_density) for each sample.
-    flat_cluster_sizes : np.ndarray
-        1D NumPy array of all cluster sizes, flattened across all samples.
-    flat_cluster_llrs : np.ndarray
-        1D NumPy array of all cluster LLRs, flattened across all samples.
-    offsets : np.ndarray
-        1D NumPy array storing the starting indices for each sample's data in
-        the flattened `flat_cluster_sizes` and `flat_cluster_llrs` arrays.
-        The length of this array is (number of samples + 1).
+        float soft outputs (pred_llr, detector_density, gap_proxy) for each sample.
+    clusters_csr : scipy.sparse.csr_array or None
+        2D CSR array containing cluster information for all samples.
+        Each row corresponds to one sample. Not returned if include_cluster_stats is False.
+    preds_csr : scipy.sparse.csr_array
+        2D boolean CSR array containing LSD predictions for all samples.
+        Each row corresponds to one sample.
+    preds_bp_csr : scipy.sparse.csr_array
+        2D boolean CSR array containing BP predictions for all samples.
+        Each row corresponds to one sample.
     """
+    if shots == 0:
+        raise ValueError("Total number of shots to simulate must be greater than 0.")
+
     # Divide shots among jobs
     chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
 
-    # Handle empty shots or chunks
-    empty_df_check = _handle_empty_shot_chunks(
-        shots,
-        chunk_sizes,
-        ["fail", "fail_bp", "converge", "pred_llr", "detector_density"],
-    )
-    if empty_df_check is not None:
-        return (
-            empty_df_check,
-            np.array([], dtype=int),
-            np.array([], dtype=float),
-            np.array([0], dtype=int),
-        )
-
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(
-        delayed(task)(
+        delayed(bplsd_simulation_task_single)(
             shots=chunk,
-            circuit=circuit,  # Pass circuit
+            circuit=circuit,
             decoder_prms=decoder_prms,
+            compute_logical_gap_proxy=compute_logical_gap_proxy,
+            include_cluster_stats=include_cluster_stats,
         )
         for chunk in chunk_sizes
     )
@@ -311,8 +343,9 @@ def task_parallel(
         fails_bp_l,
         converges_l,
         scalar_soft_infos_nested_l,
-        cs_nested_l,
-        cl_nested_l,
+        clusters_csr_l,
+        preds_csr_l,
+        preds_bp_csr_l,
     ) = zip(*results)
 
     fails_s = pd.Series(np.concatenate(fails_l), name="fail", dtype=bool)
@@ -329,30 +362,20 @@ def task_parallel(
     # Combine fail flag with soft info
     df = pd.concat([fails_s, fails_bp_s, converges_s, df_soft], axis=1)
 
-    # Process cluster_sizes and cluster_llrs
-    cluster_sizes_list_flat = [item for sublist in cs_nested_l for item in sublist]
-    cluster_llrs_list_flat = [item for sublist in cl_nested_l for item in sublist]
-
-    if cluster_sizes_list_flat:
-        flat_cluster_sizes = np.concatenate(cluster_sizes_list_flat).astype(np.int_)
+    # Concatenate CSR arrays from all tasks
+    # dtype is automatically determined by the largest dtype in the list
+    if include_cluster_stats:
+        clusters_csr = sparse.vstack(clusters_csr_l, format="csr")
     else:
-        flat_cluster_sizes = np.array([], dtype=np.int_)
-
-    if cluster_llrs_list_flat:
-        flat_cluster_llrs = np.concatenate(cluster_llrs_list_flat)
-    else:
-        flat_cluster_llrs = np.array([], dtype=float)
-
-    lengths = [len(cs_arr) for cs_arr in cluster_sizes_list_flat]
-    offsets = np.cumsum([0] + lengths).astype(
-        np.int64
-    )  # Use int64 for cumsum, then cast later
+        clusters_csr = None
+    preds_csr = sparse.vstack(preds_csr_l, format="csr")
+    preds_bp_csr = sparse.vstack(preds_bp_csr_l, format="csr")
 
     df = _convert_df_dtypes_for_feather(df.copy())  # Ensure correct dtypes for output
-    return df, flat_cluster_sizes, flat_cluster_llrs, offsets
+    return df, clusters_csr, preds_csr, preds_bp_csr
 
 
-def task_matching(
+def matching_simulation_task_single(
     shots: int,
     circuit: stim.Circuit,
     decoder_prms: Dict[str, Any] | None = None,
@@ -446,16 +469,9 @@ def task_matching_parallel(
     # Divide shots among jobs
     chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
 
-    # Handle empty shots or chunks
-    empty_df_check = _handle_empty_shot_chunks(
-        shots, chunk_sizes, ["fail", "pred_llr", "detector_density", "gap"]
-    )
-    if empty_df_check is not None:
-        return empty_df_check
-
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(
-        delayed(task_matching)(
+        delayed(matching_simulation_task_single)(
             shots=chunk,
             circuit=circuit,  # Pass circuit
             decoder_prms=decoder_prms,
@@ -509,35 +525,3 @@ def _calculate_chunk_sizes(shots: int, n_jobs: int, repeat: int) -> List[int]:
     # Filter out zero-sized chunks if any to prevent issues with task
     chunk_sizes = [cs for cs in chunk_sizes if cs > 0]
     return chunk_sizes
-
-
-def _handle_empty_shot_chunks(
-    shots: int, chunk_sizes: List[int], columns: List[str]
-) -> pd.DataFrame | None:
-    """
-    Handles cases where there are no shots or no chunks to process.
-
-    Parameters
-    ----------
-    shots : int
-        Total number of shots.
-    chunk_sizes : list of int
-        List of chunk sizes.
-    columns : list of str
-        Column names for the empty DataFrame if returned.
-
-    Returns
-    -------
-    df : pandas.DataFrame or None
-        Returns an empty DataFrame with specified columns if shots is 0
-        or if there are no chunks despite shots > 0. Otherwise, returns None.
-    """
-    if shots == 0:
-        empty_df = pd.DataFrame(columns=columns)
-        return _convert_df_dtypes_for_feather(empty_df.copy())
-
-    if not chunk_sizes and shots > 0:
-        warnings.warn("No chunks to run, though shots > 0. This is unexpected.")
-        empty_df = pd.DataFrame(columns=columns)
-        return _convert_df_dtypes_for_feather(empty_df.copy())
-    return None

@@ -86,27 +86,53 @@ def save_df(
         pickle.dump(df, f)
 
 
-def get_raw_data_subdirectories(data_dir: str) -> List[str]:
+def get_raw_data_subdirectories(
+    data_dir: str, dataset_type: str = "surface"
+) -> List[Dict[str, str]]:
     """
-    Get all subdirectories in the raw data directory.
+    Get all subdirectories in the raw data directory with parameter info.
 
     Parameters
     ----------
     data_dir : str
         Path to the raw data directory.
+    dataset_type : str
+        Type of dataset ('surface', 'bb', 'hgp').
 
     Returns
     -------
-    List[str]
-        List of subdirectory paths.
+    List[Dict[str, str]]
+        List of dictionaries containing 'path' and 'param_combo_str' for each subdirectory.
     """
     subdirs = []
-    if os.path.exists(data_dir):
+    if not os.path.exists(data_dir):
+        return subdirs
+
+    if dataset_type in ["surface", "bb"]:
+        # Single-level directory structure: d{d}_T{T}_p{p} or n{n}_T{T}_p{p}
         for item in os.listdir(data_dir):
             item_path = os.path.join(data_dir, item)
             if os.path.isdir(item_path):
-                subdirs.append(item_path)
-    return sorted(subdirs)
+                subdirs.append({"path": item_path, "param_combo_str": item})
+
+    elif dataset_type == "hgp":
+        # Nested directory structure: {circuit_folder}/{circuit_name}
+        for circuit_folder in os.listdir(data_dir):
+            circuit_folder_path = os.path.join(data_dir, circuit_folder)
+            if os.path.isdir(circuit_folder_path):
+                for circuit_name in os.listdir(circuit_folder_path):
+                    circuit_path = os.path.join(circuit_folder_path, circuit_name)
+                    if os.path.isdir(circuit_path):
+                        # Create parameter combination string
+                        param_combo_str = f"{circuit_folder}_{circuit_name}"
+                        subdirs.append(
+                            {"path": circuit_path, "param_combo_str": param_combo_str}
+                        )
+
+    else:
+        raise ValueError(f"Unknown dataset_type: {dataset_type}")
+
+    return sorted(subdirs, key=lambda x: x["param_combo_str"])
 
 
 def process_dataset(
@@ -116,6 +142,7 @@ def process_dataset(
     orders: Optional[List[float]] = None,
     num_hist_bins: int = 10000,
     verbose: bool = False,
+    dataset_type: Optional[str] = None,
 ) -> None:
     """
     Process a dataset with given parameters.
@@ -125,7 +152,8 @@ def process_dataset(
     data_dir : str
         Path to the raw data directory.
     dataset_name : str
-        Name of the dataset (e.g., 'surface', 'surface_matching', 'bb').
+        Name of the dataset (e.g., 'surface', 'surface_matching', 'bb', 'hgp').
+        Also used to infer dataset_type if dataset_type is not provided.
     ascending_confidences : Dict[str, bool]
         Dictionary mapping aggregation methods to their ascending confidence settings.
     orders : Optional[List[float]], optional
@@ -135,7 +163,29 @@ def process_dataset(
         Number of histogram bins. Defaults to 10000.
     verbose : bool, optional
         Whether to print detailed progress information. Defaults to False.
+    dataset_type : Optional[str], optional
+        Type of dataset ('surface', 'bb', 'hgp'). If None, inferred from dataset_name.
+        This determines how directory structure is interpreted.
     """
+    # Infer dataset_type from dataset_name if not provided
+    if dataset_type is None:
+        if "hgp" in dataset_name.lower():
+            dataset_type = "hgp"
+        elif "bb" in dataset_name.lower():
+            dataset_type = "bb"
+        elif "surface" in dataset_name.lower():
+            dataset_type = "surface"
+        else:
+            # Default to surface for backward compatibility
+            dataset_type = "surface"
+            if verbose:
+                print(
+                    f"Warning: Could not infer dataset_type from dataset_name '{dataset_name}'. Using 'surface' as default."
+                )
+
+    if verbose:
+        print(f"Using dataset_type: {dataset_type}")
+
     # Set default orders if not provided
     for by, ascending_confidence in ascending_confidences.items():
         print(
@@ -158,35 +208,45 @@ def process_dataset(
             print(f"Processing method: {method_name}")
 
             # Get all raw data subdirectories (each corresponds to a parameter combination)
-            subdirs = get_raw_data_subdirectories(data_dir)
+            subdirs_info = get_raw_data_subdirectories(data_dir, dataset_type)
 
-            for subdir in subdirs:
-                subdir_name = os.path.basename(subdir)
+            for subdir_info in subdirs_info:
+                subdir_path = subdir_info["path"]
+                param_combo_str = subdir_info["param_combo_str"]
 
                 # Skip empty subdirectories
-                if not os.listdir(subdir):
-                    print(f"Skipping empty subdirectory: {subdir_name}")
+                if not os.listdir(subdir_path):
+                    print(f"Skipping empty subdirectory: {param_combo_str}")
                     continue
 
-                print(f"\nProcessing subdirectory: {subdir_name}")
-
-                # Extract parameter combination string from subdirectory name
-                param_combo_str = subdir_name
+                print(f"\nProcessing subdirectory: {param_combo_str}")
+                if verbose:
+                    print(f"  Path: {subdir_path}")
 
                 # Load existing aggregated data if available
                 existing_df_agg = load_existing_df(
                     dataset_name, method_name, param_combo_str, "aggregated"
                 )
 
+                # Load priors
+                try:
+                    priors_path = os.path.join(subdir_path, "priors.npy")
+                    priors = np.load(priors_path)
+                except FileNotFoundError:
+                    priors = (
+                        None  # pass for now, but will raise error later if needed
+                    )
+
                 # Call aggregate_data for this specific subdirectory
                 df_agg, reused = aggregate_data(
-                    subdir,  # Process individual subdirectory
+                    subdir_path,  # Process individual subdirectory
                     by=by,
                     norm_order=order,
                     num_hist_bins=num_hist_bins,
                     ascending_confidence=ascending_confidence,
                     df_existing=existing_df_agg,
                     verbose=verbose,
+                    priors=priors,
                 )
                 if reused:
                     print("    Aggregation skipped")
@@ -220,3 +280,52 @@ def process_dataset(
                     )
 
         print("=============")
+
+
+def process_all_datasets_example():
+    """
+    Example function showing how to process different dataset types.
+    This demonstrates the usage patterns for different code types.
+    """
+    # Example parameters for different methods
+    ascending_confidences = {
+        "pred_llr": True,
+        "cluster_size_norm": False,
+    }
+    orders = [0.5, 1, 2, np.inf]
+
+    # Process Surface Code dataset
+    surface_data_dir = "simulations/data/surface_code_minsum_iter30_lsd0"
+    if os.path.exists(surface_data_dir):
+        print("Processing Surface Code dataset...")
+        process_dataset(
+            data_dir=surface_data_dir,
+            dataset_name="surface_code",  # dataset_type="surface" inferred automatically
+            ascending_confidences=ascending_confidences,
+            orders=orders,
+            verbose=True,
+        )
+
+    # Process BB Code dataset
+    bb_data_dir = "simulations/data/bb_minsum_iter30_lsd0"
+    if os.path.exists(bb_data_dir):
+        print("\nProcessing BB Code dataset...")
+        process_dataset(
+            data_dir=bb_data_dir,
+            dataset_name="bb_code",  # dataset_type="bb" inferred automatically
+            ascending_confidences=ascending_confidences,
+            orders=orders,
+            verbose=True,
+        )
+
+    # Process HGP Code dataset
+    hgp_data_dir = "simulations/data/hgp_(3,4)_minsum_iter30_lsd0"
+    if os.path.exists(hgp_data_dir):
+        print("\nProcessing HGP Code dataset...")
+        process_dataset(
+            data_dir=hgp_data_dir,
+            dataset_name="hgp_code",  # dataset_type="hgp" inferred automatically
+            ascending_confidences=ascending_confidences,
+            orders=orders,
+            verbose=True,
+        )
