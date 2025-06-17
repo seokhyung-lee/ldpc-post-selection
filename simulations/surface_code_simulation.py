@@ -7,15 +7,15 @@ import numpy as np
 from scipy import sparse
 
 from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
-from simulations.simulation_utils import (
+from simulations.utils.simulation_utils import (
     _convert_df_dtypes_for_feather,
     get_existing_shots,
     bplsd_simulation_task_parallel,
 )
-from simulations.simulation_utils_legacy import (
+from simulations.utils.simulation_utils_legacy import (
     bplsd_simulation_task_parallel_legacy,
 )
-from simulations.build_circuit import build_surface_code_circuit
+from simulations.utils.build_circuit import build_surface_code_circuit
 
 
 def simulate(
@@ -84,7 +84,7 @@ def simulate(
     )
 
     # Save prior probabilities if not exists
-    prior_path = os.path.join(sub_data_dir, "prior.npy")
+    prior_path = os.path.join(sub_data_dir, "priors.npy")
     if not os.path.exists(prior_path):
         decoder = SoftOutputsBpLsdDecoder(circuit=circuit)
         np.save(prior_path, decoder.priors)

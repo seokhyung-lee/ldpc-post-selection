@@ -2,9 +2,13 @@ import matplotlib
 import pandas as pd
 from typing import Union, List, Callable
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy import stats
 import os
 import re
 import glob
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data")
 
 
 def error_band_plot(
@@ -202,15 +206,16 @@ def take_best_by_from_df_ps_dict(
     return result_df[["p_fail", "delta_p_fail", "by"]]
 
 
-def load_ps_data(
+def load_data(
     code: Union[str, List[str]],
+    data_type: str = "ps",
     prefixes: Union[str, List[str], None] = None,
     filter: dict[str, Union[int, float]] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
-    Load post-selection data for one or more codes.
+    Load simulation data for one or more codes.
 
-    Reads post-selection data from the corresponding directory structure,
+    Reads simulation data from the corresponding directory structure,
     where each subdirectory represents a different "by" value, and combines
     all pkl files within each subdirectory into a single DataFrame with
     parameters extracted from filenames as MultiIndex levels.
@@ -219,6 +224,10 @@ def load_ps_data(
     ----------
     code : str or list of str
         Code type(s) to load data for. Can be a single code or a list of codes.
+    data_type : str, default "ps"
+        Type of data to load. Must be either "ps" (post-selection data from
+        simulations/data/post_selection) or "agg" (aggregated data from
+        simulations/data/aggregated).
     prefixes : str, list of str, or None, optional
         Prefix(es) to apply to "by" values for dictionary keys. If None, no prefixes
         are applied. If a single string and code is a list, the same prefix is applied
@@ -238,8 +247,8 @@ def load_ps_data(
     Raises
     ------
     ValueError
-        If prefixes list length doesn't match code list length, or if duplicate
-        keys would be generated.
+        If data_type is not "ps" or "agg", if prefixes list length doesn't match
+        code list length, or if duplicate keys would be generated.
     """
     # Normalize inputs to lists
     if isinstance(code, str):
@@ -255,13 +264,16 @@ def load_ps_data(
         prefixes_list = list(prefixes)
 
     # Validate inputs
+    if data_type not in ["ps", "agg"]:
+        raise ValueError(f"data_type must be 'ps' or 'agg', got '{data_type}'")
+
     if len(code_list) != len(prefixes_list):
         raise ValueError(
             f"Length of code list ({len(code_list)}) must match length of prefixes list ({len(prefixes_list)})"
         )
 
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.join(current_dir, "..", "data", "post_selection")
+    data_subdir = "post_selection" if data_type == "ps" else "aggregated"
+    base_dir = os.path.join(DATA_DIR, data_subdir)
     result_dict = {}
 
     # Process each code-prefix pair
@@ -442,3 +454,193 @@ def aggregate_seeds(df_ps: pd.DataFrame, use_pfail_upper: bool = False) -> pd.Da
     result_df = result_df[columns_to_keep]
 
     return result_df
+
+
+def draw_kde_from_df_agg(
+    df_agg: pd.DataFrame,
+    ax: plt.Axes | None = None,
+    resize_plots_by_weight: bool = True,
+    plot_total_kde: bool = True,
+    kde_bw_method: str | float | None = None,
+    alpha: float = 0.6,
+    **kwargs,
+) -> plt.Axes:
+    """
+    Draw KDE plots from aggregated data showing success and failure distributions.
+
+    Creates KDE plots for success and failure distributions based on the by metric values
+    from aggregated simulation data. Optionally resizes plots by weight and includes
+    total count KDE.
+
+    Parameters
+    ----------
+    df_agg : pandas DataFrame
+        DataFrame with MultiIndex where the fourth level represents "by metric value"
+        and columns contain 'count' and 'num_fails'
+    ax : matplotlib Axes, optional
+        Axes object to plot on. If None, uses current axes
+    resize_plots_by_weight : bool, default True
+        If True, resize each KDE plot based on the proportion of success/fail counts
+        relative to total count
+    plot_total_kde : bool, default True
+        If True, also plot KDE for total count distribution
+    kde_bw_method : str, float, or None, optional
+        Bandwidth method for KDE. Can be 'scott', 'silverman', a scalar, or None
+        for automatic selection
+    alpha : float, default 0.6
+        Alpha transparency for the KDE plots
+    **kwargs
+        Additional keyword arguments passed to matplotlib plot functions
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes object containing the plot
+    """
+    if ax is None:
+        ax = plt.gca()
+
+    # Check if DataFrame is empty
+    if df_agg.empty:
+        print("Warning: Empty DataFrame provided")
+        return ax
+
+    # Get the by metric values (fourth level of MultiIndex)
+    index_names = df_agg.index.names
+    if len(index_names) < 4:
+        raise ValueError(
+            f"Expected at least 4-level MultiIndex, got {len(index_names)} levels: {index_names}"
+        )
+
+    by_metric_name = index_names[3]
+
+    # Reset index to work with columns
+    df_reset = df_agg.reset_index()
+
+    # Calculate success counts
+    df_reset["num_succ"] = df_reset["count"] - df_reset["num_fails"]
+
+    # Extract by metric values and counts
+    by_metric_values = df_reset[by_metric_name].values
+    counts = df_reset["count"].values
+    num_fails = df_reset["num_fails"].values
+    num_succ = df_reset["num_succ"].values
+
+    # Convert to numpy arrays for efficiency
+    by_metric_values = np.array(by_metric_values)
+    counts = np.array(counts, dtype=int)
+    num_fails = np.array(num_fails, dtype=int)
+    num_succ = np.array(num_succ, dtype=int)
+
+    # Filter out zero counts to avoid unnecessary computation
+    mask = counts > 0
+    by_metric_values = by_metric_values[mask]
+    counts = counts[mask]
+    num_fails = num_fails[mask]
+    num_succ = num_succ[mask]
+
+    # Check if we have data to plot
+    if len(by_metric_values) == 0 or (np.sum(num_succ) == 0 and np.sum(num_fails) == 0):
+        print("Warning: No data to plot")
+        return ax
+
+    # Determine x-range for KDE evaluation
+    x_min, x_max = np.min(by_metric_values), np.max(by_metric_values)
+    x_range = x_max - x_min
+    if x_range == 0:
+        x_range = 1  # Handle case where all values are the same
+    x_eval = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 200)
+
+    # Helper function to compute weighted KDE using scipy
+    def compute_weighted_kde(x_data, weights, x_eval, bw_method=None):
+        """Compute weighted KDE using scipy.stats.gaussian_kde"""
+        if len(x_data) == 0 or np.sum(weights) == 0:
+            return np.zeros_like(x_eval)
+
+        # Filter out zero weights
+        mask = weights > 0
+        if not np.any(mask):
+            return np.zeros_like(x_eval)
+
+        x_filtered = x_data[mask]
+        weights_filtered = weights[mask]
+
+        # Use scipy's gaussian_kde with weights
+        kde = stats.gaussian_kde(
+            x_filtered, weights=weights_filtered, bw_method=bw_method
+        )
+        return kde(x_eval)
+
+    # Calculate total counts for weighting
+    total_count_sum = np.sum(counts)
+    success_count_sum = np.sum(num_succ)
+    fail_count_sum = np.sum(num_fails)
+
+    # Plot success KDE
+    if success_count_sum > 0 and np.sum(num_succ > 0) > 0:  # Need at least one success
+        kde_success_vals = compute_weighted_kde(
+            by_metric_values, num_succ, x_eval, kde_bw_method
+        )
+
+        # Apply weight scaling if requested
+        if resize_plots_by_weight:
+            success_weight = (
+                success_count_sum / total_count_sum if total_count_sum > 0 else 1
+            )
+            kde_success_vals *= success_weight
+
+        ax.plot(
+            x_eval,
+            kde_success_vals,
+            label="Success",
+            alpha=alpha,
+            color="green",
+            **kwargs,
+        )
+        ax.fill_between(x_eval, kde_success_vals, alpha=alpha * 0.5, color="green")
+
+    # Plot failure KDE
+    if fail_count_sum > 0 and np.sum(num_fails > 0) > 0:  # Need at least one failure
+        kde_fail_vals = compute_weighted_kde(
+            by_metric_values, num_fails, x_eval, kde_bw_method
+        )
+
+        # Apply weight scaling if requested
+        if resize_plots_by_weight:
+            fail_weight = fail_count_sum / total_count_sum if total_count_sum > 0 else 1
+            kde_fail_vals *= fail_weight
+
+        ax.plot(
+            x_eval, kde_fail_vals, label="Failure", alpha=alpha, color="red", **kwargs
+        )
+        ax.fill_between(x_eval, kde_fail_vals, alpha=alpha * 0.5, color="red")
+
+    # Plot total KDE if requested
+    if plot_total_kde and total_count_sum > 0:
+        kde_total_vals = compute_weighted_kde(
+            by_metric_values, counts, x_eval, kde_bw_method
+        )
+
+        ax.plot(
+            x_eval,
+            kde_total_vals,
+            label="Total",
+            alpha=alpha,
+            color="blue",
+            linestyle="--",
+            **kwargs,
+        )
+
+    # Set labels and legend
+    ax.set_xlabel(f"{by_metric_name}")
+    ax.set_ylabel("Density")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Set title based on weighting
+    if resize_plots_by_weight:
+        ax.set_title("KDE Distribution (Weighted by Count Proportion)")
+    else:
+        ax.set_title("KDE Distribution")
+
+    return ax

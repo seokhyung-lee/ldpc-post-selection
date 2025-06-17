@@ -5,8 +5,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from simulations.analysis.data_aggregation import aggregate_data
-from simulations.analysis.data_post_processing import get_df_ps
+from .data_aggregation import aggregate_data
+from .data_post_processing import get_df_ps
 
 
 def load_existing_df(
@@ -108,14 +108,7 @@ def get_raw_data_subdirectories(
     if not os.path.exists(data_dir):
         return subdirs
 
-    if dataset_type in ["surface", "bb"]:
-        # Single-level directory structure: d{d}_T{T}_p{p} or n{n}_T{T}_p{p}
-        for item in os.listdir(data_dir):
-            item_path = os.path.join(data_dir, item)
-            if os.path.isdir(item_path):
-                subdirs.append({"path": item_path, "param_combo_str": item})
-
-    elif dataset_type == "hgp":
+    if dataset_type == "hgp":
         # Nested directory structure: {circuit_folder}/{circuit_name}
         for circuit_folder in os.listdir(data_dir):
             circuit_folder_path = os.path.join(data_dir, circuit_folder)
@@ -130,7 +123,11 @@ def get_raw_data_subdirectories(
                         )
 
     else:
-        raise ValueError(f"Unknown dataset_type: {dataset_type}")
+        # Single-level directory structure: d{d}_T{T}_p{p} or n{n}_T{T}_p{p}
+        for item in os.listdir(data_dir):
+            item_path = os.path.join(data_dir, item)
+            if os.path.isdir(item_path):
+                subdirs.append({"path": item_path, "param_combo_str": item})
 
     return sorted(subdirs, key=lambda x: x["param_combo_str"])
 
@@ -169,19 +166,7 @@ def process_dataset(
     """
     # Infer dataset_type from dataset_name if not provided
     if dataset_type is None:
-        if "hgp" in dataset_name.lower():
-            dataset_type = "hgp"
-        elif "bb" in dataset_name.lower():
-            dataset_type = "bb"
-        elif "surface" in dataset_name.lower():
-            dataset_type = "surface"
-        else:
-            # Default to surface for backward compatibility
-            dataset_type = "surface"
-            if verbose:
-                print(
-                    f"Warning: Could not infer dataset_type from dataset_name '{dataset_name}'. Using 'surface' as default."
-                )
+        dataset_type = dataset_name.lower()
 
     if verbose:
         print(f"Using dataset_type: {dataset_type}")
@@ -233,21 +218,24 @@ def process_dataset(
                     priors_path = os.path.join(subdir_path, "priors.npy")
                     priors = np.load(priors_path)
                 except FileNotFoundError:
-                    priors = (
-                        None  # pass for now, but will raise error later if needed
-                    )
+                    priors = None  # pass for now, but will raise error later if needed
 
                 # Call aggregate_data for this specific subdirectory
-                df_agg, reused = aggregate_data(
-                    subdir_path,  # Process individual subdirectory
-                    by=by,
-                    norm_order=order,
-                    num_hist_bins=num_hist_bins,
-                    ascending_confidence=ascending_confidence,
-                    df_existing=existing_df_agg,
-                    verbose=verbose,
-                    priors=priors,
-                )
+                try:
+                    df_agg, reused = aggregate_data(
+                        subdir_path,  # Process individual subdirectory
+                        by=by,
+                        norm_order=order,
+                        num_hist_bins=num_hist_bins,
+                        ascending_confidence=ascending_confidence,
+                        df_existing=existing_df_agg,
+                        verbose=verbose,
+                        priors=priors,
+                    )
+                except FileNotFoundError:
+                    print(f"Skipping {param_combo_str} because of FileNotFoundError")
+                    continue
+
                 if reused:
                     print("    Aggregation skipped")
                 else:
@@ -280,52 +268,3 @@ def process_dataset(
                     )
 
         print("=============")
-
-
-def process_all_datasets_example():
-    """
-    Example function showing how to process different dataset types.
-    This demonstrates the usage patterns for different code types.
-    """
-    # Example parameters for different methods
-    ascending_confidences = {
-        "pred_llr": True,
-        "cluster_size_norm": False,
-    }
-    orders = [0.5, 1, 2, np.inf]
-
-    # Process Surface Code dataset
-    surface_data_dir = "simulations/data/surface_code_minsum_iter30_lsd0"
-    if os.path.exists(surface_data_dir):
-        print("Processing Surface Code dataset...")
-        process_dataset(
-            data_dir=surface_data_dir,
-            dataset_name="surface_code",  # dataset_type="surface" inferred automatically
-            ascending_confidences=ascending_confidences,
-            orders=orders,
-            verbose=True,
-        )
-
-    # Process BB Code dataset
-    bb_data_dir = "simulations/data/bb_minsum_iter30_lsd0"
-    if os.path.exists(bb_data_dir):
-        print("\nProcessing BB Code dataset...")
-        process_dataset(
-            data_dir=bb_data_dir,
-            dataset_name="bb_code",  # dataset_type="bb" inferred automatically
-            ascending_confidences=ascending_confidences,
-            orders=orders,
-            verbose=True,
-        )
-
-    # Process HGP Code dataset
-    hgp_data_dir = "simulations/data/hgp_(3,4)_minsum_iter30_lsd0"
-    if os.path.exists(hgp_data_dir):
-        print("\nProcessing HGP Code dataset...")
-        process_dataset(
-            data_dir=hgp_data_dir,
-            dataset_name="hgp_code",  # dataset_type="hgp" inferred automatically
-            ascending_confidences=ascending_confidences,
-            orders=orders,
-            verbose=True,
-        )

@@ -9,4 +9,4 @@ pandas==2.2.3
 pyarrow==20.0.0
 git+https://github.com/mkangquantum/quits.git
 git+https://github.com/seokhyung-lee/color-code-stim.git
-src/ldpc_post_selection/ext/ldpc
+ext/ldpc

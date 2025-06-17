@@ -8,7 +8,7 @@ from typing import Any, Dict
 import numpy as np
 import stim
 
-from simulations.simulation_utils import (
+from simulations.utils.simulation_utils import (
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
     get_existing_shots,

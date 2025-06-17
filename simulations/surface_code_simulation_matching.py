@@ -5,13 +5,13 @@ from typing import Any, Dict
 
 import numpy as np
 
-from simulations.simulation_utils import (
+from simulations.utils.simulation_utils import (
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
     get_existing_shots,
     task_matching_parallel,
 )
-from simulations.build_circuit import build_surface_code_circuit
+from simulations.utils.build_circuit import build_surface_code_circuit
 
 
 def simulate(

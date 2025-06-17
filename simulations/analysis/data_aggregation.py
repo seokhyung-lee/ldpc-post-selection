@@ -8,7 +8,7 @@ from scipy import sparse
 from statsmodels.stats.proportion import proportion_confint
 from tqdm import tqdm
 
-from ..simulation_utils import get_existing_shots
+from ..utils.simulation_utils import get_existing_shots
 from .numpy_utils import (
     _calculate_cluster_norms_from_flat_data_numba,
     calculate_cluster_metrics_from_csr,
@@ -81,7 +81,7 @@ def _get_values_for_binning_from_batch(
         )
         new_format_exists = os.path.isfile(clusters_path)
 
-        if legacy_files_exist and "norm" in by:
+        if legacy_files_exist:
             use_legacy_format = True
             if verbose:
                 print(f"  Using legacy format for {batch_dir_path}")
@@ -124,7 +124,7 @@ def _get_values_for_binning_from_batch(
                         norm_order=norm_order,
                     )
                 )
-            elif by == 'cluster_llr_norm':
+            elif by == "cluster_llr_norm":
                 cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
                 inside_cluster_llr_norms, outside_value = (
                     _calculate_cluster_norms_from_flat_data_numba(
@@ -133,8 +133,20 @@ def _get_values_for_binning_from_batch(
                         norm_order=norm_order,
                     )
                 )
+            elif by in ["cluster_llr_residual_sum", "cluster_llr_residual_sum_gap"]:
+                # For residual sum methods, calculate cluster_llr_norm with order=1
+                cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
+                inside_cluster_llr_norms, outside_value = (
+                    _calculate_cluster_norms_from_flat_data_numba(
+                        flat_data=cluster_llrs_flat,
+                        offsets=offsets,
+                        norm_order=1.0,  # Always use L1 norm for residual sum
+                    )
+                )
             else:
-                raise ValueError(f"Unsupported method ({by}) for legacy data structure.")
+                raise ValueError(
+                    f"Unsupported method ({by}) for legacy data structure."
+                )
 
         elif use_new_format:
             # New format: load clusters and calculate directly from CSR format
@@ -151,13 +163,22 @@ def _get_values_for_binning_from_batch(
                     )
                 )
             elif by in ["cluster_llr_norm", "cluster_llr_norm_gap"]:
-                bit_llrs = np.log((1 - priors) / priors)
                 inside_cluster_llr_norms, outside_llr_values = (
                     calculate_cluster_metrics_from_csr(
                         clusters=clusters_csr,
                         method="llr_norm",
                         priors=priors,
                         norm_order=norm_order,
+                    )
+                )
+            elif by in ["cluster_llr_residual_sum", "cluster_llr_residual_sum_gap"]:
+                # For residual sum methods, calculate cluster_llr_norm with order=1
+                inside_cluster_llr_norms, outside_llr_values = (
+                    calculate_cluster_metrics_from_csr(
+                        clusters=clusters_csr,
+                        method="llr_norm",
+                        priors=priors,
+                        norm_order=1.0,  # Always use L1 norm for residual sum
                     )
                 )
 
@@ -191,6 +212,35 @@ def _get_values_for_binning_from_batch(
             else:
                 series_to_bin = pd.Series(
                     outside_value - inside_cluster_llr_norms, index=df_scalars.index
+                )
+        elif by == "cluster_llr_residual_sum":
+            # cluster_llr_norm (order=1) - pred_llr
+            if "pred_llr" not in df_scalars.columns:
+                raise ValueError(
+                    f"'pred_llr' column not found in scalars.feather for {batch_dir_path}. Required for cluster_llr_residual_sum."
+                )
+            pred_llr_values = df_scalars["pred_llr"].values
+            cluster_llr_residual_sum_values = inside_cluster_llr_norms - pred_llr_values
+            series_to_bin = pd.Series(
+                cluster_llr_residual_sum_values, index=df_scalars.index
+            )
+        elif by == "cluster_llr_residual_sum_gap":
+            # outside_llr_value - cluster_llr_residual_sum
+            if "pred_llr" not in df_scalars.columns:
+                raise ValueError(
+                    f"'pred_llr' column not found in scalars.feather for {batch_dir_path}. Required for cluster_llr_residual_sum_gap."
+                )
+            pred_llr_values = df_scalars["pred_llr"].values
+            cluster_llr_residual_sum_values = inside_cluster_llr_norms - pred_llr_values
+            if use_new_format:
+                series_to_bin = pd.Series(
+                    outside_llr_values - cluster_llr_residual_sum_values,
+                    index=df_scalars.index,
+                )
+            else:
+                series_to_bin = pd.Series(
+                    outside_value - cluster_llr_residual_sum_values,
+                    index=df_scalars.index,
                 )
         else:
             series_to_bin = pd.Series(cluster_metrics, index=df_scalars.index)
@@ -317,6 +367,10 @@ def calculate_df_agg_for_combination(
                                    Requires `norm_order`.
         - "cluster_llr_norm_gap": outside_cluster_llr - norm_of_inside_cluster_llrs.
                                   Requires `norm_order`.
+        - "cluster_llr_residual_sum": cluster_llr_norm (order=1) - pred_llr.
+                                      Requires `priors`.
+        - "cluster_llr_residual_sum_gap": outside_cluster_llr - cluster_llr_residual_sum.
+                                          Requires `priors`.
         - "cluster_inv_entropy": Sum of entropies for all inside clusters per sample.
                             Each bit's inv_entropy is calculated as -p * log(p) - (1-p) * log(1-p).
                             Requires `priors`.
@@ -846,6 +900,10 @@ def aggregate_data(
                                    Requires `norm_order`.
         - "cluster_llr_norm_gap": outside_cluster_llr - norm_of_inside_cluster_llrs.
                                   Requires `norm_order`.
+        - "cluster_llr_residual_sum": cluster_llr_norm (order=1) - pred_llr.
+                                      Requires `priors`.
+        - "cluster_llr_residual_sum_gap": outside_cluster_llr - cluster_llr_residual_sum.
+                                          Requires `priors`.
         - "cluster_inv_entropy": Sum of entropies for all inside clusters per sample.
                             Each bit's inv_entropy is calculated as -p * log(p) - (1-p) * log(1-p).
                             Requires `priors`.

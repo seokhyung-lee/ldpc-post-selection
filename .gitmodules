@@ -1,9 +1,6 @@
-[submodule "src/ldpc_post_selection/ext/subproject"]
-	path = src/ldpc_post_selection/ext/subproject
-	url = https://github.com/seokhyung-lee/SlidingWindowDecoder.git
 [submodule "src/ldpc_post_selection/ext/SlidingWindowDecoder"]
-	path = src/ldpc_post_selection/ext/SlidingWindowDecoder
+	path = ext/SlidingWindowDecoder
 	url = https://github.com/seokhyung-lee/SlidingWindowDecoder.git
 [submodule "src/ldpc_post_selection/ext/ldpc"]
-	path = src/ldpc_post_selection/ext/ldpc
+	path = ext/ldpc
 	url = https://github.com/seokhyung-lee/ldpc.git

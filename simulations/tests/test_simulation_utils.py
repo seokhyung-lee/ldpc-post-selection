@@ -9,7 +9,7 @@ import pytest
 import stim
 
 # Functions to test
-from simulations.simulation_utils import (
+from simulations.utils.simulation_utils import (
     _calculate_chunk_sizes,
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
