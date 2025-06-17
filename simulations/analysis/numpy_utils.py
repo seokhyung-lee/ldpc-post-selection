@@ -418,11 +418,11 @@ def calculate_cluster_metrics_from_csr(
         )
 
 
-@numba.njit(parallel=True, fastmath=True, cache=True)
 def _calculate_cluster_norms_from_flat_data_numba(
     flat_data: np.ndarray,  # Any numeric array type
     offsets: np.ndarray,  # Any numeric array type (will be converted to int)
     norm_order: float,
+    sample_indices: np.ndarray | None = None,  # Optional sample filtering
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Optimized calculation of L_p norms for each sample from flattened cluster data.
@@ -436,6 +436,8 @@ def _calculate_cluster_norms_from_flat_data_numba(
         Starting indices in flat_data for each sample.
     norm_order : float
         The order p for the L_p norm. Must be positive (can be np.inf).
+    sample_indices : 1D numpy array of int, optional
+        Array of sample indices to include in the calculation. If None, all samples are processed.
 
     Returns
     -------
@@ -451,6 +453,23 @@ def _calculate_cluster_norms_from_flat_data_numba(
     This optimized version assumes all values in flat_data are positive, eliminating
     the need for absolute value calculations and improving performance.
     """
+    if sample_indices is None:
+        # Use original optimized numba version
+        return _calculate_cluster_norms_numba_kernel(flat_data, offsets, norm_order)
+    else:
+        # Use filtered version
+        return _calculate_cluster_norms_filtered_numba_kernel(
+            flat_data, offsets, norm_order, sample_indices
+        )
+
+
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def _calculate_cluster_norms_numba_kernel(
+    flat_data: np.ndarray,
+    offsets: np.ndarray,
+    norm_order: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Original unfiltered numba kernel for calculating cluster norms."""
     n = offsets.size
     end_of_data = flat_data.size
 
@@ -530,6 +549,101 @@ def _calculate_cluster_norms_from_flat_data_numba(
                 # Match legacy behavior: direct power calculation
                 sum_pow += val**norm_order
             norms[i] = sum_pow**inv_norm_order
+
+    return norms, outside
+
+
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def _calculate_cluster_norms_filtered_numba_kernel(
+    flat_data: np.ndarray,
+    offsets: np.ndarray,
+    norm_order: float,
+    sample_indices: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Filtered numba kernel for calculating cluster norms on selected samples."""
+    n = offsets.size
+    end_of_data = flat_data.size
+    output_size = len(sample_indices)
+
+    # Pre-allocate output arrays
+    norms = np.zeros(output_size, dtype=np.float32)
+    outside = np.full(output_size, np.nan, dtype=np.float32)
+
+    # Pre-compute norm type flags for better branch prediction
+    use_inf = np.isinf(norm_order)
+    use_l1 = norm_order == 1.0
+    use_l2 = norm_order == 2.0
+    use_sqrt = norm_order == 0.5
+
+    # Precompute reciprocal for general case to avoid divisions
+    inv_norm_order = 1.0 / norm_order if norm_order != 0.0 and not use_inf else 1.0
+
+    for output_idx in numba.prange(output_size):
+        # Get the actual sample index to process
+        i = int(sample_indices[output_idx])
+
+        # Get segment boundaries - ensure int conversion
+        start_idx = int(offsets[i])
+        if i < n - 1:
+            stop_idx = int(offsets[i + 1])
+        else:
+            stop_idx = int(end_of_data)
+
+        # Early exit for empty segments
+        if stop_idx <= start_idx:
+            continue
+
+        # Extract outside value (last element) - force int indexing
+        last_idx = int(stop_idx - 1)
+        outside[output_idx] = flat_data[last_idx]
+
+        # Early exit if no inside values - force int calculation
+        inside_length = int(stop_idx - start_idx - 1)
+        if inside_length <= 0:
+            continue
+
+        # Optimized norm calculations with better memory access
+        if use_inf:
+            # L∞ norm: max value (assuming positive values)
+            max_val = 0.0
+            for j in range(start_idx, last_idx):
+                val = flat_data[j]
+                if val > max_val:
+                    max_val = val
+            norms[output_idx] = max_val
+
+        elif use_l1:
+            # L1 norm: sum of values (assuming positive values)
+            sum_val = 0.0
+            for j in range(start_idx, last_idx):
+                sum_val += flat_data[j]
+            norms[output_idx] = sum_val
+
+        elif use_l2:
+            # L2 norm: sqrt of sum of squares
+            sum_sq = 0.0
+            for j in range(start_idx, last_idx):
+                val = flat_data[j]
+                sum_sq += val * val
+            norms[output_idx] = np.sqrt(sum_sq)
+
+        elif use_sqrt:
+            # Special case for p = 0.5: optimized sqrt handling
+            sum_sqrt = 0.0
+            for j in range(start_idx, last_idx):
+                val = flat_data[j]
+                # Match legacy behavior: sqrt of raw value (assume non-negative for p=0.5)
+                sum_sqrt += np.sqrt(val)
+            norms[output_idx] = sum_sqrt * sum_sqrt
+
+        else:
+            # General L_p norm case
+            sum_pow = 0.0
+            for j in range(start_idx, last_idx):
+                val = flat_data[j]
+                # Match legacy behavior: direct power calculation
+                sum_pow += val**norm_order
+            norms[output_idx] = sum_pow**inv_norm_order
 
     return norms, outside
 

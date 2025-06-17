@@ -22,6 +22,8 @@ def _get_values_for_binning_from_batch(
     by: str,
     norm_order: float | None,
     priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
+    batch_start_idx: int = 0,
     verbose: bool = False,
 ) -> Tuple[pd.Series | None, pd.DataFrame | None]:
     """
@@ -41,6 +43,10 @@ def _get_values_for_binning_from_batch(
         Order for L_p norm calculation, required for norm-based 'by' methods.
     priors : np.ndarray, optional
         1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include. If None, all samples are included.
+    batch_start_idx : int, optional
+        Starting global index for this batch. Defaults to 0.
     verbose : bool, optional
         If True, prints detailed loading information.
 
@@ -103,6 +109,33 @@ def _get_values_for_binning_from_batch(
         # Still return the empty df_scalars as it exists, the caller can decide to skip.
         # The series_to_bin will likely be empty or None.
 
+    # Filter samples based on sample_indices if provided
+    if sample_indices is not None and not df_scalars.empty:
+        batch_end_idx = batch_start_idx + len(df_scalars)
+
+        # Find which global indices fall within this batch's range
+        mask = (sample_indices >= batch_start_idx) & (sample_indices < batch_end_idx)
+        batch_sample_indices = sample_indices[mask]
+
+        if len(batch_sample_indices) == 0:
+            # No samples from this batch are in the requested indices
+            if verbose:
+                print(
+                    f"  No requested samples found in batch {batch_dir_path} (range: {batch_start_idx}-{batch_end_idx-1})"
+                )
+            return None, pd.DataFrame()
+
+        # Convert global indices to local batch indices
+        local_indices = batch_sample_indices - batch_start_idx
+
+        # Filter the dataframe to only include requested samples
+        df_scalars = df_scalars.iloc[local_indices].reset_index(drop=True)
+
+        if verbose:
+            print(
+                f"  Filtered to {len(df_scalars)} samples from batch {batch_dir_path}"
+            )
+
     series_to_bin: pd.Series | None = None
 
     if "cluster" in by:
@@ -115,6 +148,16 @@ def _get_values_for_binning_from_batch(
             # Legacy format: load flat arrays and offsets
             offsets = np.load(offsets_path, allow_pickle=False)[:-1]
 
+            # Get local sample indices for this batch if filtering is needed
+            local_sample_indices = None
+            if sample_indices is not None and not df_scalars.empty:
+                batch_end_idx = batch_start_idx + len(pd.read_feather(scalars_path))
+                mask = (sample_indices >= batch_start_idx) & (
+                    sample_indices < batch_end_idx
+                )
+                batch_sample_indices = sample_indices[mask]
+                local_sample_indices = batch_sample_indices - batch_start_idx
+
             if by == "cluster_size_norm":
                 cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
                 inside_cluster_size_norms, outside_value = (
@@ -122,6 +165,7 @@ def _get_values_for_binning_from_batch(
                         flat_data=cluster_sizes_flat,
                         offsets=offsets,
                         norm_order=norm_order,
+                        sample_indices=local_sample_indices,
                     )
                 )
             elif by == "cluster_llr_norm":
@@ -131,6 +175,7 @@ def _get_values_for_binning_from_batch(
                         flat_data=cluster_llrs_flat,
                         offsets=offsets,
                         norm_order=norm_order,
+                        sample_indices=local_sample_indices,
                     )
                 )
             elif by in ["cluster_llr_residual_sum", "cluster_llr_residual_sum_gap"]:
@@ -141,6 +186,7 @@ def _get_values_for_binning_from_batch(
                         flat_data=cluster_llrs_flat,
                         offsets=offsets,
                         norm_order=1.0,  # Always use L1 norm for residual sum
+                        sample_indices=local_sample_indices,
                     )
                 )
             else:
@@ -151,6 +197,18 @@ def _get_values_for_binning_from_batch(
         elif use_new_format:
             # New format: load clusters and calculate directly from CSR format
             clusters_csr = sparse.load_npz(clusters_path)
+
+            # If samples are filtered, we need to filter the CSR matrix rows
+            if sample_indices is not None and not df_scalars.empty:
+                batch_end_idx = batch_start_idx + len(pd.read_feather(scalars_path))
+                mask = (sample_indices >= batch_start_idx) & (
+                    sample_indices < batch_end_idx
+                )
+                batch_sample_indices = sample_indices[mask]
+                local_indices = batch_sample_indices - batch_start_idx
+
+                # Filter the CSR matrix to only include selected samples
+                clusters_csr = clusters_csr[local_indices, :]
 
             # Calculate norms directly from CSR format using Numba
             if by in ["cluster_size_norm", "cluster_size_norm_gap"]:
@@ -327,6 +385,7 @@ def calculate_df_agg_for_combination(
     by: str = "pred_llr",
     norm_order: float | None = None,
     priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
     verbose: bool = False,
 ) -> Tuple[pd.DataFrame, int]:
     """
@@ -380,6 +439,8 @@ def calculate_df_agg_for_combination(
         Required if `by` is one of the norm or norm-gap methods.
     priors : np.ndarray, optional
         1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include in the aggregation. If None, all samples are included.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
 
@@ -418,6 +479,7 @@ def calculate_df_agg_for_combination(
         min_value_override,
         max_value_override,
         priors,
+        sample_indices,
         verbose,
     )
 
@@ -446,6 +508,7 @@ def calculate_df_agg_for_combination(
         min_value_override,
         max_value_override,
         priors,
+        sample_indices,
         verbose,
     )
 
@@ -504,6 +567,7 @@ def _determine_value_range_single(
     min_value_override: float | None,
     max_value_override: float | None,
     priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
     verbose: bool = False,
 ) -> Tuple[float, float]:
     """
@@ -521,6 +585,10 @@ def _determine_value_range_single(
         User-specified minimum value override.
     max_value_override : float, optional
         User-specified maximum value override.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include. If None, all samples are included.
     verbose : bool, optional
         Whether to print progress information.
 
@@ -550,14 +618,25 @@ def _determine_value_range_single(
     found_any_valid_value_for_range = False
 
     desc_text = f"Range detection for {by}"
+    current_batch_start_idx = 0
+
     for batch_dir_pass1 in tqdm(batch_dir_paths, desc=desc_text):
         temp_series_to_bin, _ = _get_values_for_binning_from_batch(
             batch_dir_path=batch_dir_pass1,
             by=by,
             norm_order=norm_order,
             priors=priors,
+            sample_indices=sample_indices,
+            batch_start_idx=current_batch_start_idx,
             verbose=verbose > 1,
         )
+
+        # Update batch start index for next iteration
+        # Read the original scalars file to get the actual batch size
+        scalars_path = os.path.join(batch_dir_pass1, "scalars.feather")
+        if os.path.isfile(scalars_path):
+            batch_df = pd.read_feather(scalars_path)
+            current_batch_start_idx += len(batch_df)
 
         if temp_series_to_bin is not None and not temp_series_to_bin.empty:
             temp_series_to_bin_cleaned = temp_series_to_bin.dropna()
@@ -604,6 +683,7 @@ def _process_histograms_from_batches_single(
     min_value_override: float | None,
     max_value_override: float | None,
     priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
     verbose: bool = False,
 ) -> Tuple[
     np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, float, float, float
@@ -627,6 +707,10 @@ def _process_histograms_from_batches_single(
         Minimum value override.
     max_value_override : float, optional
         Maximum value override.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include. If None, all samples are included.
     verbose : bool, optional
         Whether to print progress information.
 
@@ -668,6 +752,8 @@ def _process_histograms_from_batches_single(
         )
 
     desc_text = f"Aggregation for {by}"
+    current_batch_start_idx = 0
+
     for batch_dir in tqdm(batch_dir_paths, desc=desc_text):
         start_time_read = time.perf_counter()
 
@@ -676,6 +762,8 @@ def _process_histograms_from_batches_single(
             by=by,
             norm_order=norm_order,
             priors=priors,
+            sample_indices=sample_indices,
+            batch_start_idx=current_batch_start_idx,
             verbose=verbose > 1,
         )
         read_and_initial_calc_time = time.perf_counter() - start_time_read
@@ -774,6 +862,13 @@ def _process_histograms_from_batches_single(
 
         hist_time_batch = time.perf_counter() - start_time_hist
         total_hist_time += hist_time_batch
+
+        # Update batch start index for next iteration
+        # Read the original scalars file to get the actual batch size
+        scalars_path = os.path.join(batch_dir, "scalars.feather")
+        if os.path.isfile(scalars_path):
+            batch_df = pd.read_feather(scalars_path)
+            current_batch_start_idx += len(batch_df)
 
     return (
         total_counts_hist,
@@ -879,6 +974,7 @@ def aggregate_data(
     ascending_confidence: bool = True,
     norm_order: float | None = None,
     priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
     df_existing: pd.DataFrame | None = None,
     verbose: bool = False,
 ) -> tuple[pd.DataFrame, bool]:
@@ -921,6 +1017,10 @@ def aggregate_data(
         Must be a positive float. Required if `by` is one of the norm-based methods.
     priors : np.ndarray, optional
         1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include in the aggregation. If None, all samples are included.
+        The indices should be global across all batches (e.g., if batch 0 has 1000 samples and batch 1 has 1000 samples,
+        then sample index 1500 would refer to the 500th sample in batch 1).
     df_existing : pd.DataFrame, optional
         Existing aggregation data with the same format as the return value of this function.
         If provided and the total shots from data files match the total shots in df_existing,
@@ -961,7 +1061,9 @@ def aggregate_data(
             )
 
     # Check if we can reuse existing data
-    if df_existing is not None and not df_existing.empty:
+    # Note: If sample_indices is provided, we should not reuse existing data
+    # as it likely contains different samples
+    if df_existing is not None and not df_existing.empty and sample_indices is None:
         # Validate existing data format
         if by not in df_existing.index.names:
             if by in df_existing.columns:
@@ -995,6 +1097,8 @@ def aggregate_data(
         except (FileNotFoundError, ValueError) as e:
             if verbose:
                 print(f"Could not check file shots: {e}. Reprocessing.")
+    elif sample_indices is not None and verbose:
+        print("Sample indices provided. Skipping existing data reuse and reprocessing.")
 
     # Process the data
     if verbose:
@@ -1002,6 +1106,10 @@ def aggregate_data(
         print(f"Aggregation method: {by}")
         if norm_order is not None:
             print(f"Norm order: {norm_order}")
+        if sample_indices is not None:
+            print(
+                f"Using {len(sample_indices)} specific sample indices (range: {sample_indices.min()}-{sample_indices.max()})"
+            )
 
     df_agg, total_rows_processed = calculate_df_agg_for_combination(
         data_dir=data_dir,
@@ -1012,6 +1120,7 @@ def aggregate_data(
         by=by,
         norm_order=norm_order,
         priors=priors,
+        sample_indices=sample_indices,
         verbose=verbose,
     )
 
