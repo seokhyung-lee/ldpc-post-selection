@@ -9,7 +9,7 @@ import stim
 from joblib import Parallel, delayed
 from scipy import sparse
 
-from src.ldpc_post_selection.decoder import (
+from ldpc_post_selection.decoder import (
     SoftOutputsBpLsdDecoder,
     SoftOutputsMatchingDecoder,
 )

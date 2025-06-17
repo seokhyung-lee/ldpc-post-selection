@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import time
 from scipy import sparse
-from statsmodels.stats.proportion import proportion_confint
 from tqdm import tqdm
 
 from ..utils.simulation_utils import get_existing_shots
@@ -963,6 +962,151 @@ def _build_result_dataframe_single(
         df_agg.set_index(binned_value_column_name, inplace=True)
 
     return df_agg
+
+
+def extract_sample_metric_values(
+    data_dir: str,
+    *,
+    by: str,
+    norm_order: float | None = None,
+    priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
+    dtype: np.dtype = np.float32,
+    verbose: bool = False,
+) -> np.ndarray:
+    """
+    Extract metric values for all samples from batch directories without binning.
+
+    Parameters
+    ----------
+    data_dir : str
+        Directory path containing batch subdirectories for a single parameter combination.
+    by : str
+        Column or method to extract values from.
+        Supported values:
+        - "cluster_size_norm": Calculates norm of "inside" cluster sizes per sample.
+                               Requires `norm_order`.
+        - "cluster_llr_norm": Calculates norm of "inside" cluster LLRs per sample.
+                              Requires `norm_order`.
+        - "cluster_size_norm_gap": outside_cluster_size - norm_of_inside_cluster_sizes.
+                                   Requires `norm_order`.
+        - "cluster_llr_norm_gap": outside_cluster_llr - norm_of_inside_cluster_llrs.
+                                  Requires `norm_order`.
+        - "cluster_llr_residual_sum": cluster_llr_norm (order=1) - pred_llr.
+                                      Requires `priors`.
+        - "cluster_llr_residual_sum_gap": outside_cluster_llr - cluster_llr_residual_sum.
+                                          Requires `priors`.
+        - "cluster_inv_entropy": Sum of entropies for all inside clusters per sample.
+                            Each bit's inv_entropy is calculated as -p * log(p) - (1-p) * log(1-p).
+                            Requires `priors`.
+        - All the other values are read from the 'scalars.feather' file.
+    norm_order : float, optional
+        The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
+        Must be a positive float. Required if `by` is one of the norm-based methods.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include. If None, all samples are included.
+        The indices should be global across all batches (e.g., if batch 0 has 1000 samples and batch 1 has 1000 samples,
+        then sample index 1500 would refer to the 500th sample in batch 1).
+    dtype : np.dtype, optional
+        Data type for the output array. Defaults to np.float32 for memory efficiency.
+        Common choices: np.float32, np.float64, np.int32, np.int64.
+    verbose : bool, optional
+        Whether to print progress and informational messages. Defaults to False.
+
+    Returns
+    -------
+    values : np.ndarray
+        1D numpy array containing the metric values for all samples with specified dtype.
+        NaN values are removed from the output.
+    """
+    if not os.path.isdir(data_dir):
+        raise FileNotFoundError(f"Error: Data directory not found: {data_dir}")
+
+    # Find batch directories directly in data_dir
+    batch_dir_paths = []
+    for item in os.listdir(data_dir):
+        item_path = os.path.join(data_dir, item)
+        if os.path.isdir(item_path) and item.startswith("batch_"):
+            batch_dir_paths.append(item_path)
+
+    if not batch_dir_paths:
+        raise FileNotFoundError(f"No batch directories found in {data_dir}")
+
+    batch_dir_paths.sort()  # For consistent ordering
+
+    if verbose:
+        print(f"Found {len(batch_dir_paths)} batch directories in {data_dir}")
+        print(f"Extracting metric values for: {by}")
+        if norm_order is not None:
+            print(f"Norm order: {norm_order}")
+        if sample_indices is not None:
+            print(
+                f"Using {len(sample_indices)} specific sample indices (range: {sample_indices.min()}-{sample_indices.max()})"
+            )
+
+    all_values = []
+    current_batch_start_idx = 0
+
+    desc_text = f"Extracting {by} values"
+
+    for batch_dir in tqdm(batch_dir_paths, desc=desc_text):
+        try:
+            series_to_extract, df_scalars = _get_values_for_binning_from_batch(
+                batch_dir_path=batch_dir,
+                by=by,
+                norm_order=norm_order,
+                priors=priors,
+                sample_indices=sample_indices,
+                batch_start_idx=current_batch_start_idx,
+                verbose=verbose > 1,
+            )
+
+            # Update batch start index for next iteration
+            # Read the original scalars file to get the actual batch size
+            scalars_path = os.path.join(batch_dir, "scalars.feather")
+            if os.path.isfile(scalars_path):
+                batch_df = pd.read_feather(scalars_path)
+                current_batch_start_idx += len(batch_df)
+
+            if series_to_extract is not None and not series_to_extract.empty:
+                # Convert to numpy with specified dtype and append to list
+                batch_values = series_to_extract.to_numpy().astype(dtype)
+                all_values.append(batch_values)
+
+                if verbose:
+                    valid_count = np.sum(~np.isnan(batch_values))
+                    print(
+                        f"  Extracted {valid_count} valid values from {os.path.basename(batch_dir)} (dtype: {dtype})"
+                    )
+            else:
+                if verbose:
+                    print(f"  No values extracted from {os.path.basename(batch_dir)}")
+
+        except Exception as e:
+            raise ValueError(f"  Error processing {os.path.basename(batch_dir)}: {e}")
+
+    if not all_values:
+        if verbose:
+            print("No values were extracted from any batch directory.")
+        return np.array([], dtype=dtype)
+
+    # Concatenate all values
+    concatenated_values = np.concatenate(all_values)
+
+    # Remove NaN values and ensure final dtype
+    valid_values = concatenated_values[~np.isnan(concatenated_values)]
+
+    if verbose:
+        print(
+            f"Extracted {len(valid_values)} valid values (removed {len(concatenated_values) - len(valid_values)} NaN values)"
+        )
+        if len(valid_values) > 0:
+            print(f"Value range: [{valid_values.min():.6f}, {valid_values.max():.6f}]")
+        print(f"Final array dtype: {valid_values.dtype}")
+
+    return valid_values
 
 
 def aggregate_data(

@@ -644,3 +644,4 @@ def draw_kde_from_df_agg(
         ax.set_title("KDE Distribution")
 
     return ax
+

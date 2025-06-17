@@ -9,7 +9,7 @@ import stim
 from joblib import Parallel, delayed
 from scipy import sparse
 
-from src.ldpc_post_selection.decoder import (
+from ldpc_post_selection.decoder import (
     SoftOutputsBpLsdDecoder,
 )
 from simulations.utils.simulation_utils import (
@@ -246,4 +246,3 @@ def bplsd_simulation_task_parallel_legacy(
 
     df = _convert_df_dtypes_for_feather(df.copy())  # Ensure correct dtypes for output
     return df, flat_cluster_sizes, flat_cluster_llrs, offsets
-

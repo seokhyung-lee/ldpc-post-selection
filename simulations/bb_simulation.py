@@ -6,7 +6,7 @@ from typing import Any, Dict
 import numpy as np
 from scipy import sparse
 
-from src.ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
+from ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 from simulations.utils.simulation_utils import (
     _convert_df_dtypes_for_feather,
     _get_optimal_uint_dtype,
