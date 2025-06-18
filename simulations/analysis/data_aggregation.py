@@ -157,7 +157,7 @@ def _get_values_for_binning_from_batch(
                 batch_sample_indices = sample_indices[mask]
                 local_sample_indices = batch_sample_indices - batch_start_idx
 
-            if by == "cluster_size_norm":
+            if by in ["cluster_size_norm", "cluster_size_norm_gap"]:
                 cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
                 inside_cluster_size_norms, outside_value = (
                     _calculate_cluster_norms_from_flat_data_numba(
@@ -167,7 +167,7 @@ def _get_values_for_binning_from_batch(
                         sample_indices=local_sample_indices,
                     )
                 )
-            elif by == "cluster_llr_norm":
+            elif by in ["cluster_llr_norm", "cluster_llr_norm_gap"]:
                 cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
                 inside_cluster_llr_norms, outside_value = (
                     _calculate_cluster_norms_from_flat_data_numba(

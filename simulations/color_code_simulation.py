@@ -155,11 +155,11 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3, 3e-3, 5e-3]
-    d_list = [5, 9, 13]
+    plist = [1e-3]
+    d_list = [9, 13]
 
     shots_per_batch = round(1e7)
-    total_shots = round(1e7)
+    total_shots = round(1e8)
     n_jobs = 18
     repeat = 10
 

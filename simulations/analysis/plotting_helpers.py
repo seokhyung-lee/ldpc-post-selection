@@ -3,17 +3,54 @@ import pandas as pd
 from typing import Union, List, Callable
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import stats
 import os
 import re
 import glob
+from sklearn.metrics import roc_auc_score, average_precision_score
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data")
 
 
 def error_band_plot(
-    x, y, delta_y, ax=None, color=None, alpha=0.3, **kwargs
+    x: np.ndarray,
+    y: np.ndarray,
+    delta_y: np.ndarray,
+    ax: matplotlib.axes.Axes | None = None,
+    color: str | None = None,
+    alpha: float = 0.3,
+    **kwargs,
 ) -> list[matplotlib.lines.Line2D]:
+    """
+    Create a line plot with error bands (confidence intervals).
+
+    This function plots a line with x and y coordinates and fills the area between
+    y-delta_y and y+delta_y to visualize uncertainty or error bounds around the main line.
+
+    Parameters
+    ----------
+    x : 1D numpy array
+        X-axis coordinates for the line plot.
+    y : 1D numpy array
+        Y-axis coordinates for the line plot.
+    delta_y : 1D numpy array
+        Error/uncertainty values used to create the error band around the main line.
+        The band extends from y-delta_y to y+delta_y.
+    ax : matplotlib Axes object or None, optional
+        Axes to plot on. If None, uses the current axes from plt.gca().
+    color : str or None, optional
+        Color for both the line and the error band. If None, matplotlib automatically
+        assigns a color and uses it for both elements.
+    alpha : float, optional
+        Transparency level for the error band fill. Must be between 0 (transparent)
+        and 1 (opaque). Default is 0.3.
+    **kwargs
+        Additional keyword arguments passed to the matplotlib plot function.
+
+    Returns
+    -------
+    list of matplotlib Line2D objects
+        List containing the line objects created by the plot function.
+    """
     if ax is None:
         ax = plt.gca()
     line = ax.plot(x, y, color=color, **kwargs)
@@ -455,3 +492,518 @@ def aggregate_seeds(df_ps: pd.DataFrame, use_pfail_upper: bool = False) -> pd.Da
 
     return result_df
 
+
+# -----------------------------------------------------------------------------
+# Split into two explicit APIs
+# -----------------------------------------------------------------------------
+
+
+def calculate_discrimination_metrics_from_raw(
+    metric_values: np.ndarray,
+    fails: np.ndarray,
+    method: str = "all",
+    ascending_confidence: bool = False,
+) -> float | dict[str, float]:
+    """
+    Calculate discrimination metrics from raw per-sample data.
+
+    Parameters
+    ----------
+    metric_values : 1D numpy array of float
+        Metric value for every individual sample.
+    fails : 1D numpy array of bool or int
+        Indicator for whether each sample resulted in a failure (``True``/1) or
+        success (``False``/0). Must have the same shape as ``metric_values``.
+    method : {'auprc', 'auc-roc', 'cohen-d', 'lift', 'all'}, default 'all'
+        Metric(s) to compute.
+    ascending_confidence : bool, default False
+        If *True*, lower metric values correspond to higher failure
+        probability. The values are negated internally so that a higher score
+        always indicates a higher chance of failure for the purpose of the
+        calculations.
+
+    Returns
+    -------
+    float | dict[str, float]
+        • A single float for the specified *method*.
+        • A dictionary with all metrics when *method* is ``'all'``.
+    """
+
+    metric_values = np.asarray(metric_values)
+    fails = np.asarray(fails, dtype=bool)
+
+    if metric_values.shape != fails.shape:
+        raise ValueError("metric_values and fails must have identical shapes.")
+
+    if ascending_confidence:
+        metric_values = -metric_values
+
+    y_true = fails.astype(int)
+    y_score = metric_values
+
+    total_fails = int(np.sum(fails))
+    total_successes = int(len(fails) - total_fails)
+
+    def _calc_auprc() -> float:
+        if total_fails == 0 or total_successes == 0:
+            return np.nan
+        return average_precision_score(y_true, y_score)
+
+    def _calc_auc_roc() -> float:
+        if total_fails == 0 or total_successes == 0:
+            return np.nan
+        return roc_auc_score(y_true, y_score)
+
+    def _calc_cohen_d() -> float:
+        if total_fails < 2 or total_successes < 2:
+            return np.nan
+        fail_scores = metric_values[fails]
+        success_scores = metric_values[~fails]
+        mean_fail, mean_success = np.mean(fail_scores), np.mean(success_scores)
+        var_fail = np.var(fail_scores, ddof=1)
+        var_success = np.var(success_scores, ddof=1)
+        s_pooled_sq = (
+            (total_fails - 1) * var_fail + (total_successes - 1) * var_success
+        ) / (total_fails + total_successes - 2)
+        s_pooled_sq = max(s_pooled_sq, 0.0)
+        s_pooled = np.sqrt(s_pooled_sq)
+        if s_pooled == 0:
+            return np.inf * np.sign(mean_fail - mean_success)
+        return (mean_fail - mean_success) / s_pooled
+
+    def _calc_lift() -> float:
+        auprc_val = _calc_auprc()
+        if np.isnan(auprc_val):
+            return np.nan
+        fail_rate = total_fails / (total_fails + total_successes)
+        if fail_rate == 0:
+            return np.inf
+        return auprc_val / fail_rate
+
+    if method == "all":
+        return {
+            "auprc": _calc_auprc(),
+            "auc-roc": _calc_auc_roc(),
+            "cohen-d": _calc_cohen_d(),
+            "lift": _calc_lift(),
+        }
+    if method == "auprc":
+        return _calc_auprc()
+    if method == "auc-roc":
+        return _calc_auc_roc()
+    if method == "cohen-d":
+        return _calc_cohen_d()
+    if method == "lift":
+        return _calc_lift()
+
+    raise ValueError(f"Unknown method '{method}'")
+
+
+def calculate_discrimination_metrics_from_agg(
+    metric_values: np.ndarray,
+    counts: np.ndarray,
+    num_fails: np.ndarray,
+    method: str = "all",
+    ascending_confidence: bool = False,
+) -> float | dict[str, float]:
+    """
+    Calculate discrimination metrics from aggregated sample data.
+
+    Parameters
+    ----------
+    metric_values : 1D numpy array of float
+        Unique metric values.
+    counts : 1D numpy array of int
+        Total number of samples corresponding to each ``metric_values`` entry.
+    num_fails : 1D numpy array of int
+        Number of failures corresponding to each ``metric_values`` entry.
+    method : {'auprc', 'auc-roc', 'cohen-d', 'lift', 'all'}, default 'all'
+        Metric(s) to compute.
+    ascending_confidence : bool, default False
+        If *True*, lower metric values correspond to higher failure probability
+        and are negated internally before metric computation.
+
+    Returns
+    -------
+    float | dict[str, float]
+        • A single float for the specified *method*.
+        • A dictionary with all metrics when *method* is ``'all'``.
+    """
+
+    metric_values = np.asarray(metric_values)
+    counts = np.asarray(counts)
+    num_fails = np.asarray(num_fails)
+
+    if not (metric_values.shape == counts.shape == num_fails.shape):
+        raise ValueError(
+            "metric_values, counts, and num_fails must share the same shape."
+        )
+
+    if ascending_confidence:
+        metric_values = -metric_values
+
+    num_successes = counts - num_fails
+    total_fails = int(np.sum(num_fails))
+    total_successes = int(np.sum(num_successes))
+
+    def _get_sklearn_inputs() -> (
+        tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]
+    ):
+        if total_fails == 0 or total_successes == 0:
+            return None, None, None
+        fail_mask = num_fails > 0
+        success_mask = num_successes > 0
+        y_true = np.concatenate(
+            [
+                np.ones(np.count_nonzero(fail_mask), dtype=int),
+                np.zeros(np.count_nonzero(success_mask), dtype=int),
+            ]
+        )
+        y_score = np.concatenate(
+            [metric_values[fail_mask], metric_values[success_mask]]
+        )
+        sample_weight = np.concatenate(
+            [num_fails[fail_mask], num_successes[success_mask]]
+        )
+        return y_true, y_score, sample_weight
+
+    def _calc_auprc() -> float:
+        y_true, y_score, sample_weight = _get_sklearn_inputs()
+        if y_true is None:
+            return np.nan
+        return average_precision_score(y_true, y_score, sample_weight=sample_weight)
+
+    def _calc_auc_roc() -> float:
+        y_true, y_score, sample_weight = _get_sklearn_inputs()
+        if y_true is None:
+            return np.nan
+        return roc_auc_score(y_true, y_score, sample_weight=sample_weight)
+
+    def _calc_cohen_d() -> float:
+        if total_fails < 2 or total_successes < 2:
+            return np.nan
+        mean_fail = float(np.dot(num_fails, metric_values) / total_fails)
+        mean_success = float(np.dot(num_successes, metric_values) / total_successes)
+        sum_sq_fail = np.dot(num_fails, metric_values**2)
+        sum_sq_success = np.dot(num_successes, metric_values**2)
+        var_fail = (sum_sq_fail - total_fails * mean_fail**2) / (total_fails - 1)
+        var_success = (sum_sq_success - total_successes * mean_success**2) / (
+            total_successes - 1
+        )
+        var_fail = max(var_fail, 0.0)
+        var_success = max(var_success, 0.0)
+        s_pooled_sq = (
+            (total_fails - 1) * var_fail + (total_successes - 1) * var_success
+        ) / (total_fails + total_successes - 2)
+        s_pooled_sq = max(s_pooled_sq, 0.0)
+        s_pooled = np.sqrt(s_pooled_sq)
+        if s_pooled == 0:
+            return np.inf * np.sign(mean_fail - mean_success)
+        return (mean_fail - mean_success) / s_pooled
+
+    def _calc_lift() -> float:
+        auprc_val = _calc_auprc()
+        if np.isnan(auprc_val):
+            return np.nan
+        if total_fails == 0 or total_successes == 0:
+            return np.nan
+        fail_rate = total_fails / (total_fails + total_successes)
+        if fail_rate == 0:
+            return np.inf
+        return auprc_val / fail_rate
+
+    if method == "all":
+        return {
+            "auprc": _calc_auprc(),
+            "auc-roc": _calc_auc_roc(),
+            "cohen-d": _calc_cohen_d(),
+            "lift": _calc_lift(),
+        }
+    if method == "auprc":
+        return _calc_auprc()
+    if method == "auc-roc":
+        return _calc_auc_roc()
+    if method == "cohen-d":
+        return _calc_cohen_d()
+    if method == "lift":
+        return _calc_lift()
+
+    raise ValueError(f"Unknown method '{method}'")
+
+
+##
+# -----------------------------------------------------------------------------
+# Histogram utilities
+# -----------------------------------------------------------------------------
+
+
+def plot_success_failure_histogram(
+    df_agg: pd.DataFrame,
+    *,
+    bins: int = 500,
+    ax: matplotlib.axes.Axes | None = None,
+    colors: tuple[str, str] | None = None,
+    alpha: float = 0.4,
+    rescale_by_rate: bool = False,
+    twin_y: bool = False,
+    lower_trim_frac: float = 0.0,
+    upper_trim_frac: float = 0.0,
+) -> matplotlib.axes.Axes:
+    """
+    Plot overlaid success and failure histograms from an aggregated simulation
+    DataFrame.
+
+    The input ``df_agg`` must contain the following columns (case-sensitive):
+
+    * ``count`` – total number of samples for the corresponding metric value.
+    * ``num_fails`` – number of failed samples.
+
+    If a column ``num_succs`` is absent it will be derived on the fly as
+    ``count - num_fails``.
+
+    Parameters
+    ----------
+    df_agg : pandas DataFrame
+        Aggregated data with a *single-level* index whose values correspond to
+        the confidence metric (e.g. *cluster_llr_norm_gap_1*).  Columns must at
+        least include ``count`` and ``num_fails``.
+    bins : int, default 500
+        Number of histogram bins.
+    ax : matplotlib.axes.Axes or None, optional
+        Target axes.  A new figure and axes are created when *None*.
+    colors : tuple of str, optional
+        Two matplotlib/Seaborn-compatible colours ``(success, fail)``.  Defaults
+        to the first two colours of the current palette.
+    alpha : float, default 0.4
+        Transparency for the filled histograms.
+    rescale_by_rate : bool, default False
+        If *True*, histogram heights are scaled so that the *area* under the
+        success curve equals the overall success rate (``#succ / (#succ+#fail)``)
+        and analogously for failures.  Internally this is achieved by plotting
+        histogram *probability mass* (``stat='sum'``) instead of a density.
+    twin_y : bool, default False
+        Draw failures on a secondary y-axis (``ax.twinx()``) so that each
+        histogram has an independent vertical scale.  Useful when success and
+        failure counts differ by orders of magnitude.
+
+    lower_trim_frac : float, default 0.0
+        Fraction (0‒0.5) of the *total* mass to trim from the lower tail of the
+        metric distribution.  Applied independently to successes and failures;
+        the final retained range is the union of both trimmed intervals.
+
+    upper_trim_frac : float, default 0.0
+        Analogous fraction to trim from the upper tail.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes with the drawn histograms.
+    """
+
+    import seaborn as sns  # local import to avoid mandatory dependency at import time
+
+    if "count" not in df_agg.columns or "num_fails" not in df_agg.columns:
+        raise ValueError("df_agg must contain 'count' and 'num_fails' columns.")
+
+    # Work on a copy and ensure index ordering is ascending
+    df_agg = df_agg.sort_index().copy()
+
+    # Pre-compute default display range (may be tightened later)
+    keep_min: float = float(df_agg.index.min())
+    keep_max: float = float(df_agg.index.max())
+
+    # ------------------------------------------------------------------
+    # Optional tail trimming (lower_trim_frac & upper_trim_frac)
+    # ------------------------------------------------------------------
+
+    if not (0.0 <= lower_trim_frac < 0.5 and 0.0 <= upper_trim_frac < 0.5):
+        raise ValueError("lower_trim_frac and upper_trim_frac must be in [0, 0.5).")
+
+    if lower_trim_frac > 0.0 or upper_trim_frac > 0.0:
+
+        def _weighted_quantile(
+            values: np.ndarray, weights: np.ndarray, q: float
+        ) -> float:
+            """Return weighted quantile of *values* at cumulative probability *q*."""
+            if len(values) == 0:
+                return np.nan
+            sorter = np.argsort(values)
+            values_sorted = values[sorter]
+            weights_sorted = weights[sorter]
+            cumulative = np.cumsum(weights_sorted)
+            cutoff = q * cumulative[-1]
+            idx = np.searchsorted(cumulative, cutoff, side="left")
+            return float(values_sorted[min(idx, len(values_sorted) - 1)])
+
+        metrics = df_agg.index.to_numpy(dtype=float)
+
+        succ_weights = (
+            df_agg["num_succs"].to_numpy()
+            if "num_succs" in df_agg.columns
+            else (df_agg["count"] - df_agg["num_fails"]).to_numpy()
+        )
+        fail_weights = df_agg["num_fails"].to_numpy()
+
+        # Ensure num_succs column exists for weights if not already present
+        if "num_succs" not in df_agg.columns:
+            df_agg["num_succs"] = succ_weights
+
+        # --- Success range ---
+        if succ_weights.sum() > 0:
+            succ_lower = _weighted_quantile(metrics, succ_weights, lower_trim_frac)
+            succ_upper = _weighted_quantile(metrics, succ_weights, 1 - upper_trim_frac)
+        else:  # no successes
+            succ_lower, succ_upper = metrics.min(), metrics.max()
+
+        # --- Failure range ---
+        if fail_weights.sum() > 0:
+            fail_lower = _weighted_quantile(metrics, fail_weights, lower_trim_frac)
+            fail_upper = _weighted_quantile(metrics, fail_weights, 1 - upper_trim_frac)
+        else:  # no failures
+            fail_lower, fail_upper = metrics.min(), metrics.max()
+
+        # Union of intervals; *do not* drop data – limits will be applied post-plot
+        keep_min = min(succ_lower, fail_lower)
+        keep_max = max(succ_upper, fail_upper)
+
+    # Ensure num_succs column exists
+    if "num_succs" not in df_agg.columns:
+        df_agg["num_succs"] = df_agg["count"] - df_agg["num_fails"]
+
+    # Colours – fall back to Seaborn default palette if none supplied
+    if colors is None:
+        palette = sns.color_palette()
+        success_col, fail_col = palette[0], palette[1]
+    else:
+        if len(colors) != 2:
+            raise ValueError("'colors' must be a tuple of exactly two colour strings.")
+        success_col, fail_col = colors
+
+    # Axes handling
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    metric_name = df_agg.index.name or "metric"
+    bin_range = (df_agg.index.min(), df_agg.index.max())
+
+    df_reset = df_agg.reset_index()
+    if metric_name not in df_reset.columns:
+        # Happens when original index had no name; pandas uses 'index' by default
+        df_reset = df_reset.rename(columns={df_reset.columns[0]: metric_name})
+
+    # Primary (success) and optional secondary (failure) axes
+    succ_ax = ax
+    fail_ax = succ_ax.twinx() if twin_y else succ_ax
+
+    # ------------------------------------------------------------------
+    # Determine weights/stat depending on rescaling option
+    # ------------------------------------------------------------------
+
+    if rescale_by_rate:
+        total_samples = int(df_agg["count"].sum())
+        df_reset["succ_weight"] = df_reset["num_succs"] / total_samples
+        df_reset["fail_weight"] = df_reset["num_fails"] / total_samples
+        succ_weight_col = "succ_weight"
+        fail_weight_col = "fail_weight"
+        stat_mode = "count"
+    else:
+        succ_weight_col = "num_succs"
+        fail_weight_col = "num_fails"
+        stat_mode = "density"
+
+    # Success histogram – filled then outline for visibility
+    sns.histplot(
+        df_reset,
+        x=metric_name,
+        weights=succ_weight_col,
+        bins=bins,
+        stat=stat_mode,
+        binrange=bin_range,
+        alpha=alpha,
+        color=success_col,
+        ax=succ_ax,
+        zorder=1,
+    )
+    sns.histplot(
+        df_reset,
+        x=metric_name,
+        weights=succ_weight_col,
+        bins=bins,
+        stat=stat_mode,
+        binrange=bin_range,
+        fill=False,
+        element="poly",
+        linewidth=1.5,
+        color=success_col,
+        label="success",
+        ax=succ_ax,
+        zorder=3,
+    )
+
+    # Failure histogram – filled then outline
+    sns.histplot(
+        df_reset,
+        x=metric_name,
+        weights=fail_weight_col,
+        bins=bins,
+        stat=stat_mode,
+        binrange=bin_range,
+        alpha=alpha,
+        color=fail_col,
+        ax=fail_ax,
+        zorder=2,
+    )
+    sns.histplot(
+        df_reset,
+        x=metric_name,
+        weights=fail_weight_col,
+        bins=bins,
+        stat=stat_mode,
+        binrange=bin_range,
+        fill=False,
+        element="poly",
+        linewidth=1.5,
+        color=fail_col,
+        label="fail",
+        ax=fail_ax,
+        zorder=4,
+    )
+
+    # Axis labels and legend
+    succ_ax.set_xlabel(metric_name)
+
+    # ------------------------------------------------------------------
+    # Customise y-axes when twin_y is enabled
+    # ------------------------------------------------------------------
+    if twin_y:
+        # Label axes
+        succ_ax.set_ylabel("Density (success)")
+        fail_ax.set_ylabel("Density (fail)")
+
+        # Match axis and tick colours to the corresponding histogram colours
+        succ_ax.tick_params(axis="y", colors=success_col)
+        fail_ax.tick_params(axis="y", colors=fail_col)
+
+        # Set spine and label colours for better visual association
+        succ_ax.spines["left"].set_color(success_col)
+        fail_ax.spines["right"].set_color(fail_col)
+        succ_ax.yaxis.label.set_color(success_col)
+        fail_ax.yaxis.label.set_color(fail_col)
+
+    # Merge legends from both axes when twin_y is used
+    if twin_y:
+        handles1, labels1 = succ_ax.get_legend_handles_labels()
+        handles2, labels2 = fail_ax.get_legend_handles_labels()
+        succ_ax.legend(handles1 + handles2, labels1 + labels2)
+    else:
+        succ_ax.legend()
+
+    # ------------------------------------------------------------------
+    # Apply x-axis trimming, if requested, *after* plotting so overall counts
+    # and binning remain unchanged.
+    # ------------------------------------------------------------------
+
+    if lower_trim_frac > 0.0 or upper_trim_frac > 0.0:
+        succ_ax.set_xlim(keep_min, keep_max)
+
+    return succ_ax
