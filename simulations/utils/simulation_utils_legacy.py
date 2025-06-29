@@ -14,7 +14,6 @@ from ldpc_post_selection.decoder import (
 )
 from simulations.utils.simulation_utils import (
     _calculate_chunk_sizes,
-    _handle_empty_shot_chunks,
     _convert_df_dtypes_for_feather,
 )
 
@@ -176,20 +175,6 @@ def bplsd_simulation_task_parallel_legacy(
     """
     # Divide shots among jobs
     chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
-
-    # Handle empty shots or chunks
-    empty_df_check = _handle_empty_shot_chunks(
-        shots,
-        chunk_sizes,
-        ["fail", "fail_bp", "converge", "pred_llr", "detector_density"],
-    )
-    if empty_df_check is not None:
-        return (
-            empty_df_check,
-            np.array([], dtype=int),
-            np.array([], dtype=float),
-            np.array([0], dtype=int),
-        )
 
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(

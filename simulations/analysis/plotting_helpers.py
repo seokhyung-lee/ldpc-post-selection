@@ -51,6 +51,13 @@ def error_band_plot(
     list of matplotlib Line2D objects
         List containing the line objects created by the plot function.
     """
+    x = np.asarray(x)
+    y = np.asarray(y)
+    delta_y = np.asarray(delta_y)
+
+    if x.ndim != 1 or y.ndim != 1 or delta_y.ndim != 1:
+        raise ValueError("x, y, and delta_y must be 1D arrays")
+
     if ax is None:
         ax = plt.gca()
     line = ax.plot(x, y, color=color, **kwargs)

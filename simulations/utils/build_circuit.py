@@ -31,7 +31,7 @@ def build_surface_code_circuit(
     p : float, default=0.0
         The physical error rate.
     noise : str, default="circuit-level"
-        The noise model type. Can be either "circuit-level" or "code-capacity".
+        The noise model type: ["circuit-level", "code-capacity", "phenom"].
     only_z_detectors : bool, default=False
         Whether to only include Z-type detectors.
 
@@ -41,21 +41,26 @@ def build_surface_code_circuit(
         The generated stim circuit.
     """
     if noise in {"circuit-level", "circuit_level"}:
-        p_circuit = p
+        p_clifford = p_meas = p_reset = p
         p_depol = 0
     elif noise in {"code-capacity", "code_capacity"}:
-        p_circuit = 0
+        p_clifford = p_meas = p_reset = 0
         p_depol = p
+    elif noise in {"phenom", "phenomenological"}:
+        p_clifford = p_reset = 0
+        p_depol = p_meas = p
+
     else:
         raise ValueError(f"Invalid noise type: {noise}")
+
     circuit = stim.Circuit.generated(
         "surface_code:rotated_memory_z",
         distance=d,
         rounds=T,
-        after_clifford_depolarization=p_circuit,
+        after_clifford_depolarization=p_clifford,
         before_round_data_depolarization=p_depol,
-        before_measure_flip_probability=p_circuit,
-        after_reset_flip_probability=p_circuit,
+        before_measure_flip_probability=p_meas,
+        after_reset_flip_probability=p_reset,
     )
     if only_z_detectors:
         detector_coords = circuit.get_detector_coordinates()

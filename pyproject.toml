@@ -18,6 +18,7 @@ dependencies = [
     "joblib>=1.4.2",
     "pandas>=2.2.3",
     "pyarrow>=20.0.0",
+    "joblib",
     "quits @ git+https://github.com/mkangquantum/quits.git",
     "color-code-stim @ git+https://github.com/seokhyung-lee/color-code-stim.git",
     "ldpc @ file:./ext/ldpc",

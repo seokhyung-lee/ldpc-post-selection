@@ -28,6 +28,7 @@ def simulate(
     repeat: int,
     shots_per_batch: int = 1_000_000,
     decoder_prms: Dict[str, Any] | None = None,
+    noise_model: str = "circuit-level",
 ) -> None:
     """
     Run the simulation for a given (p, d, T) configuration, saving results in batches.
@@ -53,6 +54,8 @@ def simulate(
         Number of shots to simulate and save per batch file.
     decoder_prms : Dict[str, Any], optional
         Parameters for the SoftOutputsBpLsdDecoder.
+    noise_model : str, default="circuit-level"
+        The noise model type: ["circuit-level", "code-capacity", "phenom"].
 
     Returns
     -------
@@ -80,7 +83,7 @@ def simulate(
 
     # Create the circuit once for this (p, d, T) configuration
     circuit = build_surface_code_circuit(
-        p=p, d=d, T=T, noise="circuit-level", only_z_detectors=True
+        p=p, d=d, T=T, noise=noise_model, only_z_detectors=True
     )
 
     # Save prior probabilities if not exists
@@ -157,11 +160,14 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [5e-3]
-    d_list = [9]
+    plist = np.arange(1e-3, 3.1e-3, 1e-3).round(4)
+    # plist = [0.015]
+    d_list = [5]
+    noise_model = "circuit-level"
+    # noise_model = "phenom"
 
-    shots_per_batch = round(1e6)
-    total_shots = round(1e7)
+    shots_per_batch = round(1e8)
+    total_shots = round(1e9)
     n_jobs = 18
     repeat = 10
 
@@ -195,6 +201,7 @@ if __name__ == "__main__":
                 repeat=repeat,
                 shots_per_batch=shots_per_batch,
                 decoder_prms=decoder_prms,
+                noise_model=noise_model,
             )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
