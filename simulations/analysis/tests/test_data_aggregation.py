@@ -83,7 +83,7 @@ class TestDataAggregation:
         """Test _get_values_for_binning_from_batch with basic column."""
         batch_dir = self.create_test_batch("batch_0001")
 
-        series, df_scalars = _get_values_for_binning_from_batch(
+        series, df_scalars, original_batch_size = _get_values_for_binning_from_batch(
             batch_dir, by="pred_llr", norm_order=None, verbose=False
         )
 
@@ -109,7 +109,7 @@ class TestDataAggregation:
         batch_dir = self.create_test_batch("batch_0001", include_npy=True)
 
         # Test cluster_size_norm
-        series, df_scalars = _get_values_for_binning_from_batch(
+        series, df_scalars, original_batch_size = _get_values_for_binning_from_batch(
             batch_dir, by="cluster_size_norm", norm_order=2.0, verbose=False
         )
 
