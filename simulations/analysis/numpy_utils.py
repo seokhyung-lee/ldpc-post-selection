@@ -724,7 +724,7 @@ def _calculate_cluster_norms_filtered_numba_kernel(
     return norms, outside
 
 
-@numba.njit(fastmath=True, cache=True, parallel=True)
+@numba.njit(fastmath=True, cache=True)
 def _numba_cluster_norm_kernel(
     data: np.ndarray,
     indices: np.ndarray,
@@ -737,11 +737,7 @@ def _numba_cluster_norm_kernel(
     calculate_llrs: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Core JIT-compiled function for calculating cluster norms from CSR matrix components using optimized single-pass algorithm.
-
-    This function processes cluster data in a single pass per sample, calculating both inside cluster norms
-    and outside cluster values efficiently. It uses parallel processing across samples and optimized
-    memory access patterns for better performance.
+    Core JIT-compiled function for calculating cluster norms from CSR matrix components.
 
     Parameters
     ----------
@@ -760,7 +756,7 @@ def _numba_cluster_norm_kernel(
     bit_llrs : 1D numpy array of float
         Log-likelihood ratios for each bit position.
     norm_order : float
-        The order p for the L_p norm calculation (can be np.inf).
+        The order p for the L_p norm calculation.
     calculate_llrs : bool
         If True, use LLR values; if False, use counts.
 
@@ -774,98 +770,101 @@ def _numba_cluster_norm_kernel(
     inside_norms = np.zeros(num_samples, dtype=np.float64)
     outside_values = np.zeros(num_samples, dtype=np.float64)
 
-    # Calculate total LLR sum for outside value computation
-    total_llr_sum = 0.0
-    if calculate_llrs:
-        total_llr_sum = bit_llrs.sum()
+    for i in range(num_samples):
+        start_idx = indptr[i]
+        end_idx = indptr[i + 1]
 
-    # Main processing loop - parallel across samples
-    for row in numba.prange(num_samples):
-        start_idx = indptr[row]
-        end_idx = indptr[row + 1]
-        nnz_row = end_idx - start_idx
+        # Calculate outside values (matching original logic)
+        outside_count = 0
+        outside_llr_sum = 0.0
+        positions_stored = np.zeros(num_bits, dtype=np.uint8)
 
-        # Initialize temporary variables for this sample
-        explicit_zero_cnt = 0
-        implicit_zero_cnt = num_bits - nnz_row
-        inside_llr_sum = 0.0  # Total LLR sum for cluster_id > 0
-        sample_max_cluster = 0
+        # First pass: mark stored positions and count explicit zeros
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            bit_pos = int(indices[data_idx])
 
-        # Scratch array for cluster sums - reused across samples
-        cluster_sums = np.zeros(max_cluster_id + 1, dtype=np.float64)
+            if bit_pos < num_bits:
+                positions_stored[bit_pos] = 1
 
-        # Single pass over the current CSR row
-        for idx in range(start_idx, end_idx):
-            cid = int(data[idx])
-            bpos = int(indices[idx])
+                if cluster_id == 0:
+                    # Explicit outside cluster
+                    outside_count += 1
+                    if calculate_llrs and bit_pos < len(bit_llrs):
+                        outside_llr_sum += bit_llrs[bit_pos]
 
-            if cid == 0:
-                # Explicit outside cluster
-                explicit_zero_cnt += 1
-                # Outside LLR is computed as total_sum - inside_sum, so no need to add LLR here
-                continue
+        # Second pass: count implicit zeros (positions not stored)
+        for bit_pos in range(num_bits):
+            if positions_stored[bit_pos] == 0:
+                # Implicit outside cluster (not stored = cluster_id 0)
+                outside_count += 1
+                if calculate_llrs and bit_pos < len(bit_llrs):
+                    outside_llr_sum += bit_llrs[bit_pos]
 
-            # Inside cluster processing
-            if calculate_llrs and bpos < len(bit_llrs):
-                val = bit_llrs[bpos]
-                cluster_sums[cid] += val
-                inside_llr_sum += val
-            else:
-                cluster_sums[cid] += 1.0  # Count mode
-
-            if cid > sample_max_cluster:
-                sample_max_cluster = cid
-
-        # Calculate outside values
         if calculate_llrs:
-            outside_values[row] = total_llr_sum - inside_llr_sum
+            outside_values[i] = outside_llr_sum
         else:
-            outside_values[row] = explicit_zero_cnt + implicit_zero_cnt
+            outside_values[i] = outside_count
 
-        # Calculate inside norm
-        if sample_max_cluster == 0:  # All values are outside clusters, norm = 0
+        # Skip if no data for this sample
+        if end_idx <= start_idx:
             continue
 
+        # Find maximum cluster ID to allocate arrays for this sample
+        sample_max_cluster_id = 0
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            if cluster_id > sample_max_cluster_id:
+                sample_max_cluster_id = cluster_id
+
+        # Skip if no inside clusters (all cluster_id == 0)
+        if sample_max_cluster_id == 0:
+            continue
+
+        # Use arrays for Numba compatibility
+        cluster_sums = np.zeros(sample_max_cluster_id + 1, dtype=np.float64)
+
+        # Count clusters and calculate sums
+        for data_idx in range(start_idx, end_idx):
+            cluster_id = int(data[data_idx])
+            bit_pos = int(indices[data_idx])
+
+            if cluster_id > 0:
+                if calculate_llrs and bit_pos < len(bit_llrs):
+                    cluster_sums[cluster_id] += bit_llrs[bit_pos]
+                elif not calculate_llrs:
+                    cluster_sums[cluster_id] += 1.0
+
+        # Calculate norm for inside clusters
         norm_val = 0.0
         if norm_order == 1.0:
-            # L1 norm: sum of absolute values
-            for cid in range(1, sample_max_cluster + 1):
-                norm_val += abs(cluster_sums[cid])
-
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                norm_val += abs(cluster_sums[cluster_id])
         elif norm_order == 2.0:
-            # L2 norm: square root of sum of squares
             sum_sq = 0.0
-            for cid in range(1, sample_max_cluster + 1):
-                v = cluster_sums[cid]
-                sum_sq += v * v
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                val = cluster_sums[cluster_id]
+                sum_sq += val * val
             norm_val = np.sqrt(sum_sq)
-
         elif np.isinf(norm_order):
-            # L∞ norm: maximum absolute value
-            for cid in range(1, sample_max_cluster + 1):
-                v = abs(cluster_sums[cid])
-                if v > norm_val:
-                    norm_val = v
-
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                abs_val = abs(cluster_sums[cluster_id])
+                if abs_val > norm_val:
+                    norm_val = abs_val
         elif norm_order == 0.5:
-            # Special case for p = 0.5: optimized sqrt handling
             sum_sqrt = 0.0
-            for cid in range(1, sample_max_cluster + 1):
-                v = cluster_sums[cid]
-                if v > 0:
-                    sum_sqrt += np.sqrt(v)
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                if cluster_sums[cluster_id] > 0:
+                    sum_sqrt += np.sqrt(abs(cluster_sums[cluster_id]))
             norm_val = sum_sqrt * sum_sqrt
-
-        else:
-            # Generic L_p norm case
+        else:  # Generic case
             sum_pow = 0.0
-            for cid in range(1, sample_max_cluster + 1):
-                v = cluster_sums[cid]
-                if v > 0:
-                    sum_pow += abs(v) ** norm_order
+            for cluster_id in range(1, sample_max_cluster_id + 1):
+                if cluster_sums[cluster_id] > 0:
+                    sum_pow += abs(cluster_sums[cluster_id]) ** norm_order
             norm_val = sum_pow ** (1.0 / norm_order)
 
-        inside_norms[row] = norm_val
+        inside_norms[i] = norm_val
 
     return inside_norms, outside_values
 

@@ -1,5 +1,5 @@
 from itertools import product
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import stim
@@ -7,7 +7,7 @@ from ldpc.bplsd_decoder import BpLsdDecoder
 from scipy.sparse import csc_matrix, vstack
 
 from .base import SoftOutputsDecoder
-from .utils import compute_cluster_stats, label_clusters
+from .utils import compute_cluster_stats
 
 
 class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
@@ -29,7 +29,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         lsd_method: str = "LSD_0",
         lsd_order: int = 0,
         ms_scaling_factor: float = 1.0,
-        detector_time_coords: int | Sequence[int] = -1,
         **kwargs,
     ):
         """
@@ -45,79 +44,34 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             Observable matrix. Internally stored as a scipy csc matrix of uint8.
         circuit : stim.Circuit, optional
             Circuit.
-        max_iter : int
+        max_iter : int, optional
             Maximum iterations for the BP part of the decoder. Defaults to 30.
-        bp_method : str
+        bp_method : str, optional
             Method for BP message updates ('product_sum' or 'minimum_sum'). Defaults to
             "product_sum".
-        lsd_method : str
+        lsd_method : str, optional
             Method for the LSD part ('LSD_0', 'LSD_E', 'LSD_CS'). Defaults to "LSD_0".
-        lsd_order : int
+        lsd_order : int, optional
             Order parameter for LSD. Defaults to 0.
-        ms_scaling_factor : float
+        ms_scaling_factor : float, optional
             Scaling factor for min-sum BP. Defaults to 1.0.
-        detector_time_coords : int or sequence of int, defaults to -1
-            Time coordinates of the detectors for sliding window decoding.
-            If not given, the last element of coordinates is used for each detector.
-            If a single integer, it indicates which element of the coordinates to use.
-            If a sequence of integers, it explicitly specifies the time coordinates of
-            the detectors, so its length must be the same as the number of detectors.
-            If `circuit` is not given, this must be a sequence of integers.
         """
         # SoftOutputsBpLsdDecoder will always use decompose_errors=False if a circuit is given
         super().__init__(
             H=H, p=p, obs_matrix=obs_matrix, circuit=circuit, decompose_errors=False
         )
 
-        bplsd_kwargs = {
-            "max_iter": max_iter,
-            "bp_method": bp_method,
-            "lsd_method": lsd_method,
-            "lsd_order": lsd_order,
-            "ms_scaling_factor": ms_scaling_factor,
-        }
-        bplsd_kwargs.update(kwargs)
-
-        self._bplsd_kwargs = bplsd_kwargs
-
         self._bplsd = BpLsdDecoder(
             self.H,
             error_channel=self.priors,
-            **bplsd_kwargs,
+            max_iter=max_iter,
+            bp_method=bp_method,
+            lsd_method=lsd_method,
+            lsd_order=lsd_order,
+            ms_scaling_factor=ms_scaling_factor,
+            **kwargs,
         )
         self._bplsd.set_do_stats(True)
-
-        try:
-            if len(detector_time_coords) == self.H.shape[0]:
-                self._detector_time_coords = np.array(detector_time_coords, dtype=int)
-                self._det_time_coord_index = None
-            else:
-                raise ValueError(
-                    "detector_time_coords must be a sequence of integers with the same length as the number of detectors"
-                )
-        except TypeError:
-            self._detector_time_coords = None
-            self._det_time_coord_index = detector_time_coords
-
-    @property
-    def detector_time_coords(self) -> np.ndarray:
-        if self._detector_time_coords is not None:
-            return self._detector_time_coords.copy()
-
-        else:
-            if self.circuit is None:
-                raise ValueError(
-                    "detector_time_coords must be a sequence of integers if circuit is not given"
-                )
-
-            det_coords_dict = self.circuit.get_detector_coordinates()
-            det_indices = sorted(det_coords_dict.keys())
-            det_time_coords = [
-                det_coords_dict[i][self._det_time_coord_index] for i in det_indices
-            ]
-            det_time_coords = np.array(det_time_coords, dtype=int)
-            self._detector_time_coords = det_time_coords
-            return det_time_coords.copy()
 
     def _get_logical_classes_to_explore(
         self,
@@ -420,9 +374,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         Returns
         -------
-        pred : np.ndarray
+        preds : np.ndarray
             Predicted error pattern.
-        pred_bp : np.ndarray
+        preds_bp : np.ndarray
             Predicted error pattern from BP. It is valid only if the BP is converged.
         converge : bool
             Whether the BP is converged.
@@ -540,245 +494,3 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             print("BP+LSD decoding process completed!")
 
         return pred, pred_bp, converge, soft_outputs
-
-    def decode_sliding_window(
-        self,
-        detector_outcomes: np.ndarray | List[bool | int],
-        window_size: int,
-        commit_size: int,
-        verbose: bool = False,
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """
-        Decode detector outcomes using (window_size, commit_size)-sliding window method.
-
-        Parameters
-        ----------
-        detector_outcomes : 1D array-like of bool/int
-            Detector measurement outcomes.
-        window_size : int
-            Number of rounds in each window.
-        commit_size : int
-            Number of rounds for each commitment.
-        verbose : bool, optional
-            If True, print progress information. Defaults to False.
-
-        Returns
-        -------
-        pred : 1D numpy array of bool
-            Predicted error pattern.
-        soft_outputs : dict
-            Aggregated soft outputs from all windows containing:
-            - clusters: list of cluster assignments for each window
-            - cluster_sizes: list of cluster sizes for each window
-            - cluster_llrs: list of cluster LLRs for each window
-            - committed_clusters: 1D numpy array of int with cluster labels for committed faults (0 = not in cluster, 1+ = cluster ID)
-            - committed_cluster_sizes: 1D numpy array of int with sizes of committed clusters
-            - committed_cluster_llrs: 1D numpy array of float with LLR sums of committed clusters
-        """
-        if window_size <= commit_size:
-            raise ValueError("W must be greater than F")
-
-        detector_outcomes = np.asarray(detector_outcomes, dtype=bool)
-        if detector_outcomes.ndim > 1:
-            raise ValueError("Detector outcomes must be a 1D array")
-
-        if verbose:
-            print(
-                f"Starting sliding window decoding with W={window_size}, F={commit_size}"
-            )
-
-        # Initialize prediction array
-        pred = np.zeros(self.H.shape[1], dtype=bool)
-
-        # Get detector time coordinates
-        detector_times = self.detector_time_coords
-        max_time = detector_times.max()
-
-        # Storage for aggregated soft outputs
-        window_clusters = []
-        window_cluster_sizes = []
-        window_cluster_llrs = []
-        committed_clusters_mask = np.zeros(self.H.shape[1], dtype=bool)
-
-        if verbose:
-            print(f"Max detector time: {max_time}")
-            print(f"Total detectors: {len(detector_times)}")
-
-        w = 0
-        while True:
-            window_start = w * commit_size
-            window_end = w * commit_size + window_size - 1
-
-            if verbose:
-                print(f"\nWindow {w}: time range [{window_start}, {window_end}]")
-
-            # Check if this is the final window
-            is_final_window = window_end >= max_time
-
-            # Extract detectors within window time range
-            window_detector_mask = (detector_times >= window_start) & (
-                detector_times <= window_end
-            )
-
-            if not np.any(window_detector_mask):
-                if verbose:
-                    print(f"No detectors in window {w}, stopping")
-                break
-
-            # Extract detector outcomes for this window
-            det_outcomes_window = detector_outcomes[window_detector_mask]
-
-            # Extract corresponding rows from H matrix
-            H_window_rows: csc_matrix = self.H[window_detector_mask, :]
-
-            # Find columns (faults) that have at least one nonzero element
-            fault_mask = np.asarray(H_window_rows.sum(axis=0) > 0).flatten()
-
-            if not np.any(fault_mask):
-                if verbose:
-                    print(f"No active faults in window {w}, skipping")
-                w += 1
-                continue
-
-            # Extract submatrices
-            H_window = H_window_rows[:, fault_mask]
-            p_window = self.priors[fault_mask]
-
-            if verbose:
-                print(f"Window matrix shape: {H_window.shape}")
-                print(f"Active faults: {fault_mask.sum()}")
-                print(f"Violated detectors: {det_outcomes_window.sum()}")
-
-            # Create new decoder for this window
-            window_decoder = SoftOutputsBpLsdDecoder(
-                H=H_window,
-                p=p_window,
-                obs_matrix=None,
-                **self._bplsd_kwargs,
-            )
-
-            # Decode window
-            pred_window_small, _, _, soft_outputs_window = window_decoder.decode(
-                det_outcomes_window,
-                include_cluster_stats=True,
-                compute_logical_gap_proxy=False,
-                verbose=False,
-            )
-
-            # Convert window prediction to full size
-            pred_window = np.zeros(self.H.shape[1], dtype=bool)
-            pred_window[fault_mask] = pred_window_small
-
-            # Convert clusters to full size
-            clusters_window = np.zeros(self.H.shape[1], dtype=int)
-            clusters_window[fault_mask] = soft_outputs_window["clusters"]
-
-            # Store window soft outputs
-            window_clusters.append(clusters_window)
-            window_cluster_sizes.append(soft_outputs_window["cluster_sizes"])
-            window_cluster_llrs.append(soft_outputs_window["cluster_llrs"])
-
-            # Determine which faults to commit
-            if is_final_window:
-                # Final window: commit all faults
-                pred_to_commit = pred_window
-                commit_mask = fault_mask
-                if verbose:
-                    print("Final window: committing all faults")
-            else:
-                # Regular window: commit only faults involved in detectors within [w*F, w*F+F-1]
-                commit_start = w * commit_size
-                commit_end = w * commit_size + commit_size - 1
-                commit_detector_mask = (detector_times >= commit_start) & (
-                    detector_times <= commit_end
-                )
-
-                if np.any(commit_detector_mask):
-                    # Find faults involved in commit region detectors
-                    H_commit_rows = self.H[commit_detector_mask, :]
-                    commit_fault_mask = np.asarray(
-                        H_commit_rows.sum(axis=0) > 0
-                    ).flatten()
-
-                    pred_to_commit = pred_window.copy()
-                    pred_to_commit[~commit_fault_mask] = False
-                    commit_mask = commit_fault_mask
-                else:
-                    pred_to_commit = np.zeros(self.H.shape[1], dtype=bool)
-                    commit_mask = np.zeros(self.H.shape[1], dtype=bool)
-
-                if verbose:
-                    print(f"Commit region: [{commit_start}, {commit_end}]")
-                    print(f"Committing {pred_to_commit.sum()} faults")
-
-            # Update committed clusters mask
-            committed_clusters_window = clusters_window.copy()
-            committed_clusters_window[~commit_mask] = 0
-            committed_clusters_mask[committed_clusters_window > 0] = True
-
-            # Update detector outcomes and prediction
-            detector_update = ((pred_to_commit.astype(np.uint8) @ self.H.T) % 2).astype(
-                bool
-            )
-            detector_outcomes ^= detector_update
-            pred ^= pred_to_commit
-
-            if verbose:
-                print(f"Updated {detector_update.sum()} detector outcomes")
-                print(f"Total prediction weight: {pred.sum()}")
-
-            # Break if final window
-            if is_final_window:
-                break
-
-            w += 1
-
-        # Convert committed clusters mask to cluster index array using label_clusters
-        adj_matrix = (self.H.T @ self.H == 1).astype(bool)
-        vertices_inside_clusters = np.where(committed_clusters_mask)[0]
-        committed_clusters_idx = label_clusters(adj_matrix, vertices_inside_clusters)
-
-        # Compute committed cluster statistics
-        committed_cluster_sizes, committed_cluster_llrs = compute_cluster_stats(
-            committed_clusters_idx, self.bit_llrs
-        )
-
-        # Create aggregated soft outputs
-        soft_outputs = {
-            "clusters": window_clusters,
-            "cluster_sizes": window_cluster_sizes,
-            "cluster_llrs": window_cluster_llrs,
-            "committed_clusters": committed_clusters_idx,
-            "committed_cluster_sizes": committed_cluster_sizes,
-            "committed_cluster_llrs": committed_cluster_llrs,
-        }
-
-        if verbose:
-            print(f"\nSliding window decoding completed!")
-            print(f"Total windows processed: {len(window_clusters)}")
-            print(f"Final prediction weight: {pred.sum()}")
-            print(
-                f"Committed clusters: {(committed_clusters_idx > 0).sum()} faults in {committed_clusters_idx.max()} clusters"
-            )
-            print(f"Committed cluster sizes: {committed_cluster_sizes}")
-            print(f"Committed cluster LLRs: {committed_cluster_llrs}")
-
-        return pred, soft_outputs
-
-    def simulate_single(self, sliding_window=False, seed=None, **kwargs):
-        rng = np.random.default_rng(seed)
-        errors = rng.random(self.H.shape[1], dtype="float64") < self.priors
-        det_outcomes = (errors @ self.H.T % 2).astype(bool)
-        if sliding_window:
-            pred, soft_outputs = self.decode_sliding_window(det_outcomes, **kwargs)
-        else:
-            pred, _, _, soft_outputs = self.decode(det_outcomes, **kwargs)
-
-        residual = pred ^ errors
-        valid = not bool(np.any(residual @ self.H.T % 2))
-        if not valid:
-            raise ValueError("Decoding outcome invalid")
-
-        fail = bool(np.any((residual @ self.obs_matrix.T) % 2))
-
-        return fail, soft_outputs

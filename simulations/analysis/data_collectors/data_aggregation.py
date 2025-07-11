@@ -6,7 +6,6 @@ import pandas as pd
 import time
 from scipy import sparse
 from tqdm import tqdm
-from joblib import Parallel, delayed
 
 from ...utils.simulation_utils import get_existing_shots
 from ..numpy_utils import (
@@ -25,7 +24,7 @@ def _get_values_for_binning_from_batch(
     sample_indices: np.ndarray | None = None,
     batch_start_idx: int = 0,
     verbose: bool = False,
-) -> Tuple[pd.Series | None, pd.DataFrame | None, int, dict]:
+) -> Tuple[pd.Series | None, pd.DataFrame | None]:
     """
     Loads data from a single batch directory needed for a specific aggregation method ('by').
 
@@ -57,22 +56,7 @@ def _get_values_for_binning_from_batch(
         or data cannot be computed.
     df_scalars : pd.DataFrame or None
         The DataFrame loaded from 'scalars.feather'. None if 'scalars.feather' is missing.
-    original_batch_size : int
-        The original size of the batch before any filtering.
-    timing_info : dict
-        Dictionary containing detailed timing information for different steps.
     """
-    timing_info = {
-        "file_check_time": 0.0,
-        "scalars_load_time": 0.0,
-        "sample_filtering_time": 0.0,
-        "cluster_file_load_time": 0.0,
-        "cluster_calculation_time": 0.0,
-        "series_creation_time": 0.0,
-    }
-
-    start_time = time.perf_counter()
-
     scalars_path = os.path.join(batch_dir_path, "scalars.feather")
     cluster_sizes_path = os.path.join(batch_dir_path, "cluster_sizes.npy")
     cluster_llrs_path = os.path.join(batch_dir_path, "cluster_llrs.npy")
@@ -116,13 +100,7 @@ def _get_values_for_binning_from_batch(
                 f"nor new format (clusters.npz) found for 'by={by}' method in {batch_dir_path}."
             )
 
-    timing_info["file_check_time"] = time.perf_counter() - start_time
-
-    # Load scalars.feather
-    start_scalars_load = time.perf_counter()
     df_scalars = pd.read_feather(scalars_path)
-    original_batch_size = len(df_scalars)  # Store original size before any filtering
-    timing_info["scalars_load_time"] = time.perf_counter() - start_scalars_load
 
     if df_scalars.empty:
         if verbose:
@@ -131,7 +109,6 @@ def _get_values_for_binning_from_batch(
         # The series_to_bin will likely be empty or None.
 
     # Filter samples based on sample_indices if provided
-    start_filtering = time.perf_counter()
     if sample_indices is not None and not df_scalars.empty:
         batch_end_idx = batch_start_idx + len(df_scalars)
 
@@ -145,7 +122,7 @@ def _get_values_for_binning_from_batch(
                 print(
                     f"  No requested samples found in batch {batch_dir_path} (range: {batch_start_idx}-{batch_end_idx-1})"
                 )
-            return None, pd.DataFrame(), original_batch_size, timing_info
+            return None, pd.DataFrame()
 
         # Convert global indices to local batch indices
         local_indices = batch_sample_indices - batch_start_idx
@@ -157,12 +134,10 @@ def _get_values_for_binning_from_batch(
             print(
                 f"  Filtered to {len(df_scalars)} samples from batch {batch_dir_path}"
             )
-    timing_info["sample_filtering_time"] = time.perf_counter() - start_filtering
 
     series_to_bin: pd.Series | None = None
 
     if "cluster" in by:
-        start_cluster_load = time.perf_counter()
         num_samples = len(df_scalars)
         inside_cluster_size_norms = np.full(num_samples, np.nan, dtype=float)
         inside_cluster_llr_norms = np.full(num_samples, np.nan, dtype=float)
@@ -182,13 +157,8 @@ def _get_values_for_binning_from_batch(
                 batch_sample_indices = sample_indices[mask]
                 local_sample_indices = batch_sample_indices - batch_start_idx
 
-            cluster_files_load_time = 0.0
             if by in ["cluster_size_norm", "cluster_size_norm_gap"]:
-                start_file_load = time.perf_counter()
                 cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
-                cluster_files_load_time = time.perf_counter() - start_file_load
-
-                start_calc = time.perf_counter()
                 inside_cluster_size_norms, outside_value = (
                     _calculate_cluster_norms_from_flat_data_numba(
                         flat_data=cluster_sizes_flat,
@@ -197,15 +167,8 @@ def _get_values_for_binning_from_batch(
                         sample_indices=local_sample_indices,
                     )
                 )
-                timing_info["cluster_calculation_time"] = (
-                    time.perf_counter() - start_calc
-                )
             elif by in ["cluster_llr_norm", "cluster_llr_norm_gap"]:
-                start_file_load = time.perf_counter()
                 cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
-                cluster_files_load_time = time.perf_counter() - start_file_load
-
-                start_calc = time.perf_counter()
                 inside_cluster_llr_norms, outside_value = (
                     _calculate_cluster_norms_from_flat_data_numba(
                         flat_data=cluster_llrs_flat,
@@ -214,16 +177,9 @@ def _get_values_for_binning_from_batch(
                         sample_indices=local_sample_indices,
                     )
                 )
-                timing_info["cluster_calculation_time"] = (
-                    time.perf_counter() - start_calc
-                )
             elif by in ["cluster_llr_residual_sum", "cluster_llr_residual_sum_gap"]:
                 # For residual sum methods, calculate cluster_llr_norm with order=1
-                start_file_load = time.perf_counter()
                 cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
-                cluster_files_load_time = time.perf_counter() - start_file_load
-
-                start_calc = time.perf_counter()
                 inside_cluster_llr_norms, outside_value = (
                     _calculate_cluster_norms_from_flat_data_numba(
                         flat_data=cluster_llrs_flat,
@@ -232,16 +188,9 @@ def _get_values_for_binning_from_batch(
                         sample_indices=local_sample_indices,
                     )
                 )
-                timing_info["cluster_calculation_time"] = (
-                    time.perf_counter() - start_calc
-                )
             elif by == "average_cluster_size":
                 # Calculate (2-norm)^2 / (1-norm) for cluster sizes
-                start_file_load = time.perf_counter()
                 cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
-                cluster_files_load_time = time.perf_counter() - start_file_load
-
-                start_calc = time.perf_counter()
                 # Calculate 2-norm
                 inside_cluster_2norms, _ = (
                     _calculate_cluster_norms_from_flat_data_numba(
@@ -266,16 +215,9 @@ def _get_values_for_binning_from_batch(
                 cluster_metrics[valid_mask] = (
                     inside_cluster_2norms[valid_mask] ** 2
                 ) / inside_cluster_1norms[valid_mask]
-                timing_info["cluster_calculation_time"] = (
-                    time.perf_counter() - start_calc
-                )
             elif by == "average_cluster_llr":
                 # Calculate (2-norm)^2 / (1-norm) for cluster LLRs
-                start_file_load = time.perf_counter()
                 cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
-                cluster_files_load_time = time.perf_counter() - start_file_load
-
-                start_calc = time.perf_counter()
                 # Calculate 2-norm
                 inside_cluster_2norms, _ = (
                     _calculate_cluster_norms_from_flat_data_numba(
@@ -300,23 +242,14 @@ def _get_values_for_binning_from_batch(
                 cluster_metrics[valid_mask] = (
                     inside_cluster_2norms[valid_mask] ** 2
                 ) / inside_cluster_1norms[valid_mask]
-                timing_info["cluster_calculation_time"] = (
-                    time.perf_counter() - start_calc
-                )
             else:
                 raise ValueError(
                     f"Unsupported method ({by}) for legacy data structure."
                 )
 
-            timing_info["cluster_file_load_time"] = cluster_files_load_time
-
         elif use_new_format:
             # New format: load clusters and calculate directly from CSR format
-            start_file_load = time.perf_counter()
             clusters_csr = sparse.load_npz(clusters_path)
-            timing_info["cluster_file_load_time"] = (
-                time.perf_counter() - start_file_load
-            )
 
             # If samples are filtered, we need to filter the CSR matrix rows
             if sample_indices is not None and not df_scalars.empty:
@@ -331,7 +264,6 @@ def _get_values_for_binning_from_batch(
                 clusters_csr = clusters_csr[local_indices, :]
 
             # Calculate norms directly from CSR format using Numba
-            start_calc = time.perf_counter()
             if by in ["cluster_size_norm", "cluster_size_norm_gap"]:
                 inside_cluster_size_norms, outside_size_values = (
                     calculate_cluster_metrics_from_csr(
@@ -410,15 +342,7 @@ def _get_values_for_binning_from_batch(
                     method=by,
                     priors=priors,
                 )
-            timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
 
-        timing_info["cluster_file_load_time"] += (
-            time.perf_counter()
-            - start_cluster_load
-            - timing_info["cluster_calculation_time"]
-        )
-
-        start_series_creation = time.perf_counter()
         if by == "cluster_size_norm":
             series_to_bin = pd.Series(inside_cluster_size_norms, index=df_scalars.index)
         elif by == "cluster_llr_norm":
@@ -476,53 +400,117 @@ def _get_values_for_binning_from_batch(
             series_to_bin = pd.Series(cluster_metrics, index=df_scalars.index)
         else:
             series_to_bin = pd.Series(cluster_metrics, index=df_scalars.index)
-        timing_info["series_creation_time"] = (
-            time.perf_counter() - start_series_creation
-        )
     else:  # 'by' is not an npy_dependent_method, try to get column directly
-        start_series_creation = time.perf_counter()
         if by in df_scalars.columns:
             series_to_bin = df_scalars[by].copy()
         else:
             raise ValueError(
                 f"  Error: Column '{by}' not found in scalars.feather for {batch_dir_path}."
             )
-        timing_info["series_creation_time"] = (
-            time.perf_counter() - start_series_creation
-        )
 
-    return series_to_bin, df_scalars, original_batch_size, timing_info
+    return series_to_bin, df_scalars
+
+
+def _create_bin_edges(
+    actual_min_val: float,
+    actual_max_val: float,
+    num_hist_bins: int,
+    by: str,
+    verbose: bool = False,
+) -> Tuple[np.ndarray, int]:
+    """
+    Create histogram bin edges.
+
+    Parameters
+    ----------
+    actual_min_val : float
+        Minimum value for binning.
+    actual_max_val : float
+        Maximum value for binning.
+    num_hist_bins : int
+        Number of histogram bins.
+    by : str
+        Aggregation method name (for error messages).
+    verbose : bool, optional
+        Whether to print warnings.
+
+    Returns
+    -------
+    bin_edges : np.ndarray
+        Array of bin edges.
+    num_hist_bins : int
+        Adjusted number of bins (may be modified if range is too small).
+    """
+    if not isinstance(num_hist_bins, int) or num_hist_bins < 1:
+        raise ValueError("num_hist_bins must be a positive integer.")
+
+    if actual_max_val < actual_min_val:
+        if verbose:
+            print(
+                f"Warning: Final max_value ({actual_max_val}) < min_value ({actual_min_val}). Setting max_value = min_value."
+            )
+        actual_max_val = actual_min_val
+
+    if actual_min_val == actual_max_val and num_hist_bins > 1:
+        if verbose:
+            print(
+                f"Warning: Cannot create {num_hist_bins} distinct bins for {by} as min_value ({actual_min_val}) == max_value ({actual_max_val}). Adjusting to 1 bin."
+            )
+        num_hist_bins = 1
+
+    bin_edges = np.linspace(actual_min_val, actual_max_val, num_hist_bins + 1)
+
+    # Validate bin edges
+    if not np.all(np.diff(bin_edges) >= 0) and len(bin_edges) > 1:
+        if num_hist_bins == 1:
+            bin_edges = np.array([actual_min_val, actual_max_val])
+            if bin_edges[0] > bin_edges[1]:
+                bin_edges[1] = bin_edges[0]
+        else:
+            raise ValueError(
+                f"Could not create monotonic bins for num_hist_bins={num_hist_bins} with range [{actual_min_val}, {actual_max_val}]. Edges: {bin_edges}"
+            )
+
+    return bin_edges, num_hist_bins
 
 
 def calculate_df_agg_for_combination(
     data_dir: str,
-    decimals: int = 2,
+    num_hist_bins: int = 1000,
+    min_value_override: float | None = None,
+    max_value_override: float | None = None,
     ascending_confidence: bool = True,
     by: str = "pred_llr",
     norm_order: float | None = None,
     priors: np.ndarray | None = None,
     sample_indices: np.ndarray | None = None,
-    n_jobs: int = 1,
     verbose: bool = False,
-    disable_tqdm: bool = False,
 ) -> Tuple[pd.DataFrame, int]:
     """
     Calculate the post-selection DataFrame (df_agg) for batch directories in a single parameter combination directory.
     Reads data from batch directories, each containing 'scalars.feather',
     'cluster_sizes.npy', 'cluster_llrs.npy', and 'offsets.npy'.
-    Uses simple rounding and counting instead of histogram binning for efficiency.
+    Uses Numba JIT for histogram calculation.
+    The range for the aggregation value histogram can be auto-detected or user-specified.
 
     Parameters
     ----------
     data_dir : str
         Directory path containing batch subdirectories for a single parameter combination.
-    decimals : int, optional
-        Number of decimal places to round to. Can be negative for rounding to tens, hundreds, etc.
-        Defaults to 2.
+    num_hist_bins : int, optional
+        Number of bins to use for the histogram. Defaults to 1000.
+    min_value_override : float, optional
+        User-specified minimum value for the histogram range.
+        If None, it's auto-detected.
+    max_value_override : float, optional
+        User-specified maximum value for the histogram range.
+        If None, it's auto-detected.
     ascending_confidence : bool, optional
         Indicates the relationship between the aggregated value and decoding confidence.
-        If True (default), a higher value implies higher confidence. Values are rounded down (floor).
-        If False, a higher value implies lower confidence. Values are rounded up (ceil).
+        If True (default), a higher value implies higher confidence. The reported
+        value in `df_agg` for a bin will be its lower edge.
+        If False, a higher value implies lower confidence. The reported
+        value in `df_agg` for a bin will be its upper edge.
     by : str, optional
         Column or method to aggregate by. Defaults to "pred_llr".
         Supported values:
@@ -554,13 +542,8 @@ def calculate_df_agg_for_combination(
         1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
     sample_indices : np.ndarray, optional
         Array of global sample indices to include in the aggregation. If None, all samples are included.
-    n_jobs : int, optional
-        Number of jobs to run in parallel for batch processing. If 1 (default), processing is sequential.
-        If -1, all available CPU cores are used.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
-    disable_tqdm : bool, optional
-        Whether to disable tqdm progress bars. Defaults to False.
 
     Returns
     -------
@@ -588,145 +571,121 @@ def calculate_df_agg_for_combination(
 
     if verbose:
         print(f"Found {len(batch_dir_paths)} batch directories in {data_dir}")
-        print(
-            f"Using decimal places: {decimals}, ascending_confidence: {ascending_confidence}"
-        )
 
-    # Process all batches (parallel or sequential)
-    if n_jobs == 1:
-        # Sequential processing
-        (
-            df_agg,
-            total_rows_processed,
-            total_samples_considered,
-            detailed_timing,
-        ) = _process_and_aggregate_batches_single_pass(
-            batch_dir_paths,
-            by,
-            decimals,
-            ascending_confidence,
-            norm_order,
-            priors,
-            sample_indices,
-            verbose,
-            disable_tqdm,
-        )
-    else:
-        # Parallel processing
-        (
-            df_agg,
-            total_rows_processed,
-            total_samples_considered,
-            detailed_timing,
-        ) = _process_and_aggregate_batches_parallel(
-            batch_dir_paths,
-            by,
-            decimals,
-            ascending_confidence,
-            norm_order,
-            priors,
-            sample_indices,
-            n_jobs,
-            verbose,
-        )
+    # Determine value range for binning
+    actual_min_val, actual_max_val = _determine_value_range_single(
+        batch_dir_paths,
+        by,
+        norm_order,
+        min_value_override,
+        max_value_override,
+        priors,
+        sample_indices,
+        verbose,
+    )
 
-    # Print detailed benchmarking results if verbose
+    # Create bin edges
+    bin_edges, adjusted_num_hist_bins = _create_bin_edges(
+        actual_min_val, actual_max_val, num_hist_bins, by, verbose
+    )
+
+    # Process histograms from all batches
+    (
+        total_counts_hist,
+        fail_counts_hist,
+        converge_counts_hist,
+        fail_converge_counts_hist,
+        total_rows_processed,
+        total_samples_considered,
+        total_read_time,
+        total_calc_value_time,
+        total_hist_time,
+    ) = _process_histograms_from_batches_single(
+        batch_dir_paths,
+        by,
+        norm_order,
+        bin_edges,
+        adjusted_num_hist_bins,
+        min_value_override,
+        max_value_override,
+        priors,
+        sample_indices,
+        verbose,
+    )
+
+    # Print benchmarking results if verbose
     if verbose:
-        print("=== DETAILED BENCHMARKING RESULTS ===")
+        print("--- Benchmarking Results ---")
         print(
             f"Total samples considered from scalars.feather: {total_samples_considered}"
         )
-        print(f"Total valid entries aggregated: {total_rows_processed}")
-        print("--- Per-step timing breakdown ---")
-        overall_total_time = (
-            sum(detailed_timing["overall"].values())
-            if detailed_timing["overall"]
-            else 0
+        print(f"Total valid entries binned: {total_rows_processed}")
+        print(
+            f"Total time reading & initial processing per batch: {total_read_time:.4f} seconds"
         )
-        for step, timing in detailed_timing["overall"].items():
-            if isinstance(timing, dict):
-                print(f"{step}:")
-                for substep, time_val in timing.items():
-                    percentage = (
-                        (time_val / overall_total_time) * 100
-                        if overall_total_time > 0
-                        else 0
-                    )
-                    print(f"  {substep}: {time_val:.4f}s ({percentage:.1f}%)")
-            else:
-                percentage = (
-                    (timing / overall_total_time) * 100 if overall_total_time > 0 else 0
-                )
-                print(f"{step}: {timing:.4f}s ({percentage:.1f}%)")
-
-                # Show batch_aggregation_time breakdown
-                if (
-                    step == "batch_aggregation_time"
-                    and detailed_timing["batch_aggregation_breakdown"]
-                ):
-                    for substep, time_val in detailed_timing[
-                        "batch_aggregation_breakdown"
-                    ].items():
-                        sub_percentage = (time_val / timing) * 100 if timing > 0 else 0
-                        overall_percentage = (
-                            (time_val / overall_total_time) * 100
-                            if overall_total_time > 0
-                            else 0
-                        )
-                        print(
-                            f"  {substep}: {time_val:.4f}s ({sub_percentage:.1f}% of batch_agg, {overall_percentage:.1f}% overall)"
-                        )
-        print("--- Batch processing statistics ---")
-        if detailed_timing["batch_stats"]:
-            batch_times = detailed_timing["batch_stats"]
-            print(f"Average time per batch: {np.mean(batch_times):.4f}s")
-            print(f"Median time per batch: {np.median(batch_times):.4f}s")
-            print(
-                f"Min/Max time per batch: {np.min(batch_times):.4f}s / {np.max(batch_times):.4f}s"
-            )
-            print(f"Std deviation: {np.std(batch_times):.4f}s")
-        print("=====================================")
+        print(
+            f"Total time for downstream calculations on series (e.g., dropna): {total_calc_value_time:.4f} seconds"
+        )
+        print(f"Total time calculating histograms: {total_hist_time:.4f} seconds")
+        print("----------------------------")
 
     # Check if any data was processed
     if total_rows_processed == 0:
         print(
-            f"Warning: Processed 0 valid entries for aggregation method {by}. Output df_agg will be empty."
+            f"Warning: Processed 0 valid entries to bin for aggregation method {by}. Output df_agg will be empty."
         )
+
+    # Determine if we have BPLSD columns based on whether any converge data was found
+    has_bplsd_data = np.any(converge_counts_hist > 0) or np.any(
+        fail_converge_counts_hist > 0
+    )
+
+    # Build and return result DataFrame
+    df_agg = _build_result_dataframe_single(
+        total_counts_hist,
+        fail_counts_hist,
+        converge_counts_hist,
+        fail_converge_counts_hist,
+        bin_edges,
+        adjusted_num_hist_bins,
+        by,
+        ascending_confidence,
+        has_bplsd_data,
+    )
 
     if verbose:
         print(
-            f"  -> Generated df_agg with {len(df_agg)} rows from {total_rows_processed} total valid aggregated entries ({total_samples_considered} samples initially considered), using method '{by}'."
+            f"  -> Generated df_agg with {len(df_agg)} rows from {total_rows_processed} total valid binned entries ({total_samples_considered} samples initially considered), using method '{by}'."
         )
 
     return df_agg, total_rows_processed
 
 
-def _process_and_aggregate_batches_single_pass(
+def _determine_value_range_single(
     batch_dir_paths: List[str],
     by: str,
-    decimals: int,
-    ascending_confidence: bool,
     norm_order: float | None,
+    min_value_override: float | None,
+    max_value_override: float | None,
     priors: np.ndarray | None = None,
     sample_indices: np.ndarray | None = None,
     verbose: bool = False,
-    disable_tqdm: bool = False,
-) -> Tuple[pd.DataFrame, int, int, dict]:
+) -> Tuple[float, float]:
     """
-    Process all batch directories in a single pass and aggregate data using rounding and counting.
+    Determine the value range for histogram binning for a single parameter combination.
 
     Parameters
     ----------
     batch_dir_paths : List[str]
-        List of batch directory paths.
+        List of batch directory paths to process.
     by : str
-        Aggregation method.
-    decimals : int
-        Number of decimal places to round to.
-    ascending_confidence : bool
-        Whether higher values mean higher confidence (determines rounding direction).
+        Column or method to aggregate by.
     norm_order : float, optional
-        Norm order for norm-based methods.
+        The order for L_p norm calculation.
+    min_value_override : float, optional
+        User-specified minimum value override.
+    max_value_override : float, optional
+        User-specified maximum value override.
     priors : np.ndarray, optional
         1D array of prior probabilities for each bit.
     sample_indices : np.ndarray, optional
@@ -736,73 +695,182 @@ def _process_and_aggregate_batches_single_pass(
 
     Returns
     -------
-    df_agg : pd.DataFrame
-        Aggregated result DataFrame.
+    actual_min_val : float
+        The minimum value for the histogram range.
+    actual_max_val : float
+        The maximum value for the histogram range.
+    """
+    if min_value_override is not None and max_value_override is not None:
+        if min_value_override >= max_value_override:
+            raise ValueError("min_value_override must be less than max_value_override.")
+        if verbose:
+            print(
+                f"  Using user-specified value range for {by}: [{min_value_override}, {max_value_override}]"
+            )
+        return min_value_override, max_value_override
+
+    if verbose:
+        print(
+            f"  Auto-detecting value range for {by} (first pass over batch directories)..."
+        )
+
+    current_min_val = np.inf
+    current_max_val = -np.inf
+    found_any_valid_value_for_range = False
+
+    desc_text = f"Range detection for {by}"
+    current_batch_start_idx = 0
+
+    for batch_dir_pass1 in tqdm(batch_dir_paths, desc=desc_text):
+        temp_series_to_bin, _ = _get_values_for_binning_from_batch(
+            batch_dir_path=batch_dir_pass1,
+            by=by,
+            norm_order=norm_order,
+            priors=priors,
+            sample_indices=sample_indices,
+            batch_start_idx=current_batch_start_idx,
+            verbose=verbose > 1,
+        )
+
+        # Update batch start index for next iteration
+        # Read the original scalars file to get the actual batch size
+        scalars_path = os.path.join(batch_dir_pass1, "scalars.feather")
+        if os.path.isfile(scalars_path):
+            batch_df = pd.read_feather(scalars_path)
+            current_batch_start_idx += len(batch_df)
+
+        if temp_series_to_bin is not None and not temp_series_to_bin.empty:
+            temp_series_to_bin_cleaned = temp_series_to_bin.dropna()
+            if not temp_series_to_bin_cleaned.empty:
+                found_any_valid_value_for_range = True
+                current_min_val = min(current_min_val, temp_series_to_bin_cleaned.min())
+                current_max_val = max(current_max_val, temp_series_to_bin_cleaned.max())
+            del temp_series_to_bin_cleaned
+        if temp_series_to_bin is not None:
+            del temp_series_to_bin
+
+    if not found_any_valid_value_for_range:
+        raise ValueError(f"No valid data found for {by} during range detection.")
+
+    actual_min_val = current_min_val
+    actual_max_val = current_max_val
+
+    # Handle edge case where min ≈ max
+    if np.isclose(actual_min_val, actual_max_val):
+        adjustment = max(1.0, abs(actual_min_val * 0.1)) if actual_min_val != 0 else 1.0
+        actual_max_val = actual_min_val + adjustment
+        actual_min_val = actual_min_val - adjustment
+        if verbose:
+            print(
+                f"  Detected min_value ~ max_value. Adjusted range for {by}: [{actual_min_val}, {actual_max_val}]"
+            )
+    elif actual_max_val < actual_min_val:
+        actual_max_val = actual_min_val
+
+    if verbose:
+        print(
+            f"  Auto-detected value range for {by}: [{actual_min_val}, {actual_max_val}]"
+        )
+
+    return actual_min_val, actual_max_val
+
+
+def _process_histograms_from_batches_single(
+    batch_dir_paths: List[str],
+    by: str,
+    norm_order: float | None,
+    bin_edges: np.ndarray,
+    num_hist_bins: int,
+    min_value_override: float | None,
+    max_value_override: float | None,
+    priors: np.ndarray | None = None,
+    sample_indices: np.ndarray | None = None,
+    verbose: bool = False,
+) -> Tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, float, float, float
+]:
+    """
+    Process histogram data from all batch directories for a single parameter combination.
+
+    Parameters
+    ----------
+    batch_dir_paths : List[str]
+        List of batch directory paths.
+    by : str
+        Aggregation method.
+    norm_order : float, optional
+        Norm order for norm-based methods.
+    bin_edges : np.ndarray
+        Histogram bin edges.
+    num_hist_bins : int
+        Number of histogram bins.
+    min_value_override : float, optional
+        Minimum value override.
+    max_value_override : float, optional
+        Maximum value override.
+    priors : np.ndarray, optional
+        1D array of prior probabilities for each bit.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include. If None, all samples are included.
+    verbose : bool, optional
+        Whether to print progress information.
+
+    Returns
+    -------
+    total_counts_hist : np.ndarray
+        Total counts histogram.
+    fail_counts_hist : np.ndarray
+        Failure counts histogram.
+    converge_counts_hist : np.ndarray
+        Convergence counts histogram.
+    fail_converge_counts_hist : np.ndarray
+        Failure convergence counts histogram.
     total_rows_processed : int
         Total number of rows processed.
     total_samples_considered : int
         Total number of samples considered.
-    detailed_timing : dict
-        Detailed timing information for all steps.
+    total_read_time : float
+        Total time spent reading data.
+    total_calc_value_time : float
+        Total time spent calculating values.
+    total_hist_time : float
+        Total time spent creating histograms.
     """
-    # Initialize aggregation containers
-    batch_dataframes = []  # List to store DataFrames from each batch
+    total_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    fail_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
+    fail_converge_counts_hist = np.zeros(num_hist_bins, dtype=np.int64)
     total_rows_processed = 0
     total_samples_considered = 0
-    has_bplsd_data = False
 
-    # Initialize detailed timing tracking
-    detailed_timing = {
-        "overall": {
-            "file_check_time": 0.0,
-            "scalars_load_time": 0.0,
-            "sample_filtering_time": 0.0,
-            "cluster_file_load_time": 0.0,
-            "cluster_calculation_time": 0.0,
-            "series_creation_time": 0.0,
-            "dropna_time": 0.0,
-            "batch_aggregation_time": 0.0,
-            "dataframe_concat_time": 0.0,
-            "final_aggregation_time": 0.0,
-        },
-        "batch_stats": [],  # Time for each individual batch
-        "batch_aggregation_breakdown": {
-            "rounding_time": 0.0,
-            "dataframe_creation_time": 0.0,
-            "numba_operations_time": 0.0,
-            "groupby_time": 0.0,
-        },
-    }
+    total_read_time = 0.0
+    total_calc_value_time = 0.0
+    total_hist_time = 0.0
 
     if verbose:
-        print(f"Processing {len(batch_dir_paths)} batch directories in single pass...")
+        print(
+            f"Processing {len(batch_dir_paths)} batch directories iteratively (Numba histograms)..."
+        )
 
     desc_text = f"Aggregation for {by}"
     current_batch_start_idx = 0
 
-    for batch_idx, batch_dir in enumerate(
-        tqdm(batch_dir_paths, desc=desc_text, disable=disable_tqdm)
-    ):
-        batch_start_time = time.perf_counter()
+    for batch_dir in tqdm(batch_dir_paths, desc=desc_text):
+        start_time_read = time.perf_counter()
 
-        series_to_aggregate, df_scalars, original_batch_size, batch_timing = (
-            _get_values_for_binning_from_batch(
-                batch_dir_path=batch_dir,
-                by=by,
-                norm_order=norm_order,
-                priors=priors,
-                sample_indices=sample_indices,
-                batch_start_idx=current_batch_start_idx,
-                verbose=verbose > 1,
-            )
+        series_to_bin, df_scalars = _get_values_for_binning_from_batch(
+            batch_dir_path=batch_dir,
+            by=by,
+            norm_order=norm_order,
+            priors=priors,
+            sample_indices=sample_indices,
+            batch_start_idx=current_batch_start_idx,
+            verbose=verbose > 1,
         )
+        read_and_initial_calc_time = time.perf_counter() - start_time_read
+        total_read_time += read_and_initial_calc_time
 
-        # Accumulate batch timing info
-        for key, value in batch_timing.items():
-            if key in detailed_timing["overall"]:
-                detailed_timing["overall"][key] += value
-
-        if series_to_aggregate is None or df_scalars is None or df_scalars.empty:
+        if series_to_bin is None or df_scalars is None or df_scalars.empty:
             if verbose:
                 print(
                     f"  Skipping batch {os.path.basename(batch_dir)} due to issues from _get_values_for_binning (series or scalars missing/empty)."
@@ -823,230 +891,179 @@ def _process_and_aggregate_batches_single_pass(
                 )
             continue
 
-        # Update has_bplsd_data flag
-        if has_bplsd_cols:
-            has_bplsd_data = True
+        start_time_calc_downstream = time.perf_counter()
+        series_to_bin_cleaned = series_to_bin.dropna()
+        calc_value_time_batch_downstream = (
+            time.perf_counter() - start_time_calc_downstream
+        )
+        total_calc_value_time += calc_value_time_batch_downstream
 
-        start_dropna = time.perf_counter()
-        series_to_aggregate_cleaned = series_to_aggregate.dropna()
-        detailed_timing["overall"]["dropna_time"] += time.perf_counter() - start_dropna
-
-        if series_to_aggregate_cleaned.empty:
+        if series_to_bin_cleaned.empty:
             if verbose:
                 print(
-                    f"  No valid (non-NaN) data to aggregate for 'by={by}' in {os.path.basename(batch_dir)} after dropna. Skipping."
+                    f"  No valid (non-NaN) data to bin for 'by={by}' in {os.path.basename(batch_dir)} after dropna. Skipping."
                 )
             continue
 
-        total_rows_processed += len(series_to_aggregate_cleaned)
+        total_rows_processed += len(series_to_bin_cleaned)
 
-        start_batch_agg = time.perf_counter()
-        batch_agg_df = _round_and_aggregate_batch_data(
-            series_to_aggregate_cleaned,
-            df_scalars,
-            decimals,
-            ascending_confidence,
-            has_bplsd_cols,
-            detailed_timing["batch_aggregation_breakdown"],
+        # Validate value range if overrides are specified
+        if min_value_override is not None and max_value_override is not None:
+            values_np_check = series_to_bin_cleaned.to_numpy()
+            if np.any(values_np_check < min_value_override) or np.any(
+                values_np_check > max_value_override
+            ):
+                raise ValueError(
+                    f"Data found outside user-specified value range "
+                    f"[{min_value_override}, {max_value_override}]. "
+                    f"Aggregation method: {by}, Batch: {os.path.basename(batch_dir)}"
+                )
+
+        start_time_hist = time.perf_counter()
+        values_np = series_to_bin_cleaned.to_numpy()
+        fail_mask = df_scalars.loc[series_to_bin_cleaned.index, "fail"].to_numpy(
+            dtype=bool
         )
 
-        # Add the aggregated DataFrame to our list
-        batch_dataframes.append(batch_agg_df)
-        batch_agg_time = time.perf_counter() - start_batch_agg
-        detailed_timing["overall"]["batch_aggregation_time"] += batch_agg_time
+        if has_bplsd_cols:
+            converge_mask = df_scalars.loc[
+                series_to_bin_cleaned.index, "converge"
+            ].to_numpy(dtype=bool)
+            fail_bp_mask = df_scalars.loc[
+                series_to_bin_cleaned.index, "fail_bp"
+            ].to_numpy(dtype=bool)
 
-        # Track individual batch timing
-        batch_total_time = time.perf_counter() - batch_start_time
-        detailed_timing["batch_stats"].append(batch_total_time)
-
-        # Update batch start index for next iteration using the original batch size
-        current_batch_start_idx += original_batch_size
-
-        if verbose > 1:
-            print(
-                f"  Batch {batch_idx+1}/{len(batch_dir_paths)} ({os.path.basename(batch_dir)}): {batch_total_time:.3f}s, {len(series_to_aggregate_cleaned)} samples"
+            (
+                total_counts_hist,
+                fail_counts_hist,
+                converge_counts_hist,
+                fail_converge_counts_hist,
+            ) = _calculate_histograms_bplsd_numba(
+                values_np,
+                fail_mask,
+                bin_edges,
+                total_counts_hist,
+                fail_counts_hist,
+                converge_mask,
+                converge_counts_hist,
+                fail_converge_counts_hist,
+                fail_bp_mask,
+            )
+        else:  # Only 'fail' column is guaranteed to be present
+            (
+                total_counts_hist,
+                fail_counts_hist,
+            ) = _calculate_histograms_matching_numba(
+                values_np,
+                fail_mask,
+                bin_edges,
+                total_counts_hist,
+                fail_counts_hist,
             )
 
-    # Combine all batch DataFrames and perform final aggregation
-    start_concat = time.perf_counter()
-    if not batch_dataframes:
-        # Return empty DataFrame with correct structure
-        columns = ["count", "num_fails"]
-        if has_bplsd_data:
-            columns.extend(["num_converged", "num_converged_fails"])
-        df_agg = pd.DataFrame(columns=columns).set_index(pd.Index([], name=by))
-    else:
-        # Concatenate all batch DataFrames
-        combined_df = pd.concat(batch_dataframes, axis=0)
-        detailed_timing["overall"]["dataframe_concat_time"] = (
-            time.perf_counter() - start_concat
-        )
+        hist_time_batch = time.perf_counter() - start_time_hist
+        total_hist_time += hist_time_batch
 
-        # Perform final aggregation by summing across all batches for each rounded_value
-        start_final_agg = time.perf_counter()
-        df_agg = combined_df.groupby(combined_df.index).sum()
-        detailed_timing["overall"]["final_aggregation_time"] = (
-            time.perf_counter() - start_final_agg
-        )
-
-        # Set the index name to match the aggregation column
-        df_agg.index.name = by
+        # Update batch start index for next iteration
+        # Read the original scalars file to get the actual batch size
+        scalars_path = os.path.join(batch_dir, "scalars.feather")
+        if os.path.isfile(scalars_path):
+            batch_df = pd.read_feather(scalars_path)
+            current_batch_start_idx += len(batch_df)
 
     return (
-        df_agg,
+        total_counts_hist,
+        fail_counts_hist,
+        converge_counts_hist,
+        fail_converge_counts_hist,
         total_rows_processed,
         total_samples_considered,
-        detailed_timing,
+        total_read_time,
+        total_calc_value_time,
+        total_hist_time,
     )
 
 
-def _round_and_aggregate_batch_data(
-    series_to_aggregate_cleaned: pd.Series,
-    df_scalars: pd.DataFrame,
-    decimals: int,
+def _build_result_dataframe_single(
+    total_counts_hist: np.ndarray,
+    fail_counts_hist: np.ndarray,
+    converge_counts_hist: np.ndarray,
+    fail_converge_counts_hist: np.ndarray,
+    bin_edges: np.ndarray,
+    num_hist_bins: int,
+    by: str,
     ascending_confidence: bool,
-    has_bplsd_cols: bool,
-    aggregation_timing: dict = None,
+    has_bplsd_data: bool,
 ) -> pd.DataFrame:
     """
-    Round values and aggregate batch data into a DataFrame.
+    Build the result DataFrame from histogram data for a single parameter combination.
 
     Parameters
     ----------
-    series_to_aggregate_cleaned : pd.Series
-        Series of values to aggregate after removing NaN values.
-    df_scalars : pd.DataFrame
-        DataFrame containing scalar metrics for each sample.
-    decimals : int
-        Number of decimal places to round to.
+    total_counts_hist : np.ndarray
+        Total counts histogram.
+    fail_counts_hist : np.ndarray
+        Failure counts histogram.
+    converge_counts_hist : np.ndarray
+        Convergence counts histogram.
+    fail_converge_counts_hist : np.ndarray
+        Failure convergence counts histogram.
+    bin_edges : np.ndarray
+        Histogram bin edges.
+    num_hist_bins : int
+        Number of histogram bins.
+    by : str
+        Aggregation method name.
     ascending_confidence : bool
-        Whether higher values mean higher confidence (determines rounding direction).
-    has_bplsd_cols : bool
-        Whether BPLSD columns are available in df_scalars.
-    aggregation_timing : dict, optional
-        Dictionary to store timing information for aggregation steps.
+        Whether higher values mean higher confidence.
+    has_bplsd_data : bool
+        Whether BPLSD convergence data is available.
 
     Returns
     -------
-    batch_agg : pd.DataFrame
-        Aggregated DataFrame with rounded values as index and count statistics as columns.
+    df_agg : pd.DataFrame
+        Aggregated result DataFrame.
     """
-    if aggregation_timing is None:
-        aggregation_timing = {}
+    binned_value_column_name = by
 
-    # Round values based on decimals and ascending_confidence
-    start_rounding = time.perf_counter()
-    multiplier = 10**decimals
     if ascending_confidence:
-        # Round down (floor) - keep as integers
-        rounded_values_int = np.floor(
-            series_to_aggregate_cleaned.values * multiplier
-        ).astype(np.int32)
+        binned_values_for_df = bin_edges[:-1]
     else:
-        # Round up (ceil) - keep as integers
-        rounded_values_int = np.ceil(
-            series_to_aggregate_cleaned.values * multiplier
-        ).astype(np.int32)
-    rounding_time = time.perf_counter() - start_rounding
-    if "rounding_time" in aggregation_timing:
-        aggregation_timing["rounding_time"] += rounding_time
+        binned_values_for_df = bin_edges[1:]
 
-    # Create DataFrame for aggregation using integer rounded values
-    start_dataframe_creation = time.perf_counter()
+    if len(binned_values_for_df) != num_hist_bins:
+        if num_hist_bins == 1 and len(total_counts_hist) == 1:
+            if ascending_confidence:
+                binned_values_for_df = np.array([bin_edges[0]])
+            else:
+                binned_values_for_df = np.array([bin_edges[len(bin_edges) - 1]])
+        else:
+            raise ValueError(
+                f"Mismatch between binned_values_for_df (len {len(binned_values_for_df)}) and num_hist_bins ({num_hist_bins}). Cannot construct df_agg."
+            )
 
-    # Check if series_to_aggregate_cleaned.index contains all indices from df_scalars
-    # If so, use entire columns directly instead of masking for better performance
-    use_full_columns = len(series_to_aggregate_cleaned.index) == len(
-        df_scalars
-    ) and series_to_aggregate_cleaned.index.equals(df_scalars.index)
+    df_agg_data = {
+        binned_value_column_name: binned_values_for_df,
+        "count": total_counts_hist,
+        "num_fails": fail_counts_hist,
+    }
 
-    if use_full_columns:
-        # Use entire columns directly - much faster
-        agg_df = pd.DataFrame(
-            {
-                "rounded_value": rounded_values_int,
-                "fail": df_scalars["fail"].values,
-            }
-        )
+    # Only add convergence columns if they have data
+    if has_bplsd_data:
+        df_agg_data["num_converged"] = converge_counts_hist
+        df_agg_data["num_converged_fails"] = fail_converge_counts_hist
 
-        if has_bplsd_cols:
-            agg_df["converge"] = df_scalars["converge"].values
-            agg_df["fail_bp"] = df_scalars["fail_bp"].values
-    else:
-        # Use index-based selection for subset
-        agg_df = pd.DataFrame(
-            {
-                "rounded_value": rounded_values_int,
-                "fail": df_scalars.loc[
-                    series_to_aggregate_cleaned.index, "fail"
-                ].values,
-            }
-        )
+    df_agg = pd.DataFrame(df_agg_data)
 
-        if has_bplsd_cols:
-            agg_df["converge"] = df_scalars.loc[
-                series_to_aggregate_cleaned.index, "converge"
-            ].values
-            agg_df["fail_bp"] = df_scalars.loc[
-                series_to_aggregate_cleaned.index, "fail_bp"
-            ].values
+    # Filter out empty bins and sort
+    df_agg = df_agg[df_agg["count"] > 0].copy()
+    if not df_agg.empty:
+        df_agg.sort_values(binned_value_column_name, ascending=True, inplace=True)
+        df_agg.reset_index(drop=True, inplace=True)
+        # Set the by column as index
+        df_agg.set_index(binned_value_column_name, inplace=True)
 
-    # Create additional column for converged_fails if needed
-    if has_bplsd_cols:
-        agg_df["converged_fails"] = agg_df["converge"] & agg_df["fail_bp"]
-
-    dataframe_creation_time = time.perf_counter() - start_dataframe_creation
-    if "dataframe_creation_time" in aggregation_timing:
-        aggregation_timing["dataframe_creation_time"] += dataframe_creation_time
-
-    # Convert bool columns to uint8 for numba compatibility
-    # numba engine cannot handle bool dtype, so we need to convert to uint8
-    start_numba_prep = time.perf_counter()
-    agg_df_numba = agg_df.copy()
-    agg_df_numba["fail"] = agg_df_numba["fail"].astype(np.uint8)
-    if has_bplsd_cols:
-        agg_df_numba["converge"] = agg_df_numba["converge"].astype(np.uint8)
-        agg_df_numba["converged_fails"] = agg_df_numba["converged_fails"].astype(
-            np.uint8
-        )
-    numba_prep_time = time.perf_counter() - start_numba_prep
-    if "numba_operations_time" in aggregation_timing:
-        aggregation_timing["numba_operations_time"] += numba_prep_time
-
-    # Define aggregation functions for vectorized operations
-    # Note: "size" doesn't support engine="numba", so we need to handle size and sum separately
-
-    # First, perform size aggregation (count) without numba engine
-    start_groupby = time.perf_counter()
-    batch_agg_size = agg_df.groupby("rounded_value").size()
-
-    # Then, perform sum aggregations with numba engine for better performance
-    sum_agg_funcs = {"fail": "sum"}  # sum gives num_fails
-    if has_bplsd_cols:
-        sum_agg_funcs["converge"] = "sum"
-        sum_agg_funcs["converged_fails"] = "sum"
-
-    batch_agg_sum = agg_df_numba.groupby("rounded_value").agg(
-        sum_agg_funcs, engine="numba"
-    )
-
-    # Combine size and sum results
-    batch_agg = pd.DataFrame(index=batch_agg_size.index)
-    batch_agg["count"] = batch_agg_size
-    batch_agg["num_fails"] = batch_agg_sum["fail"]
-
-    if has_bplsd_cols:
-        batch_agg["num_converged"] = batch_agg_sum["converge"]
-        batch_agg["num_converged_fails"] = batch_agg_sum["converged_fails"]
-
-    # Convert index from integers back to floats by dividing by multiplier and ensure float64 dtype
-    batch_agg.index = (batch_agg.index / multiplier).astype(np.float64).round(decimals)
-
-    groupby_time = time.perf_counter() - start_groupby
-    if "groupby_time" in aggregation_timing:
-        aggregation_timing["groupby_time"] += groupby_time
-
-    return batch_agg
+    return df_agg
 
 
 def extract_sample_metric_values(
@@ -1058,7 +1075,6 @@ def extract_sample_metric_values(
     sample_indices: np.ndarray | None = None,
     dtype: np.dtype = np.float32,
     verbose: bool = False,
-    disable_tqdm: bool = False,
 ) -> np.ndarray:
     """
     Extract metric values for all samples from batch directories without binning.
@@ -1140,22 +1156,24 @@ def extract_sample_metric_values(
 
     desc_text = f"Extracting {by} values"
 
-    for batch_dir in tqdm(batch_dir_paths, desc=desc_text, disable=disable_tqdm):
+    for batch_dir in tqdm(batch_dir_paths, desc=desc_text):
         try:
-            series_to_extract, df_scalars, original_batch_size, _ = (
-                _get_values_for_binning_from_batch(
-                    batch_dir_path=batch_dir,
-                    by=by,
-                    norm_order=norm_order,
-                    priors=priors,
-                    sample_indices=sample_indices,
-                    batch_start_idx=current_batch_start_idx,
-                    verbose=verbose > 1,
-                )
+            series_to_extract, df_scalars = _get_values_for_binning_from_batch(
+                batch_dir_path=batch_dir,
+                by=by,
+                norm_order=norm_order,
+                priors=priors,
+                sample_indices=sample_indices,
+                batch_start_idx=current_batch_start_idx,
+                verbose=verbose > 1,
             )
 
-            # Update batch start index for next iteration using the original batch size
-            current_batch_start_idx += original_batch_size
+            # Update batch start index for next iteration
+            # Read the original scalars file to get the actual batch size
+            scalars_path = os.path.join(batch_dir, "scalars.feather")
+            if os.path.isfile(scalars_path):
+                batch_df = pd.read_feather(scalars_path)
+                current_batch_start_idx += len(batch_df)
 
             if series_to_extract is not None and not series_to_extract.empty:
                 # Convert to numpy with specified dtype and append to list
@@ -1200,14 +1218,14 @@ def aggregate_data(
     data_dir: str,
     *,
     by: str,
-    decimals: int = 2,
+    num_hist_bins: int = 1000,
+    value_range: tuple[float, float] | None = None,
     ascending_confidence: bool = True,
     norm_order: float | None = None,
     priors: np.ndarray | None = None,
     sample_indices: np.ndarray | None = None,
     df_existing: pd.DataFrame | None = None,
     verbose: bool = False,
-    disable_tqdm: bool = False,
 ) -> tuple[pd.DataFrame, bool]:
     """
     Aggregate simulation data based on specified metrics from batch directories in a single parameter combination directory.
@@ -1238,13 +1256,13 @@ def aggregate_data(
         - "average_cluster_llr": Average cluster LLR calculated as (2-norm)^2 / (1-norm) for cluster LLRs.
                                  Requires `priors`.
         - All the other values are read from the 'scalars.feather' file.
-    decimals : int, optional
-        Number of decimal places to round to. Can be negative for rounding to tens, hundreds, etc.
-        Defaults to 2.
+    num_hist_bins : int, optional
+        Number of bins to use for the histogram. Defaults to 1000.
+    value_range : tuple[float, float], optional
+        User-specified minimum and maximum values for the histogram range ([min, max]).
+        If None, it's auto-detected across all batch data for the chosen `by` method.
     ascending_confidence : bool, optional
         Indicates the relationship between the aggregated value and decoding confidence.
-        If True (default), values are rounded down (floor).
-        If False, values are rounded up (ceil).
         Defaults to True.
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
@@ -1261,8 +1279,6 @@ def aggregate_data(
         the existing data will be returned directly without reprocessing.
     verbose : bool, optional
         Whether to print progress and informational messages. Defaults to False.
-    disable_tqdm : bool, optional
-        Whether to disable tqdm progress bars. Defaults to False.
 
     Returns
     -------
@@ -1274,6 +1290,27 @@ def aggregate_data(
     """
     if not os.path.isdir(data_dir):
         raise FileNotFoundError(f"Error: Data directory not found: {data_dir}")
+
+    # Parse value_range
+    min_val_override, max_val_override = None, None
+    if value_range:
+        if (
+            len(value_range) == 2
+            and isinstance(value_range[0], (int, float))
+            and isinstance(value_range[1], (int, float))
+        ):
+            min_val_override, max_val_override = float(value_range[0]), float(
+                value_range[1]
+            )
+            if min_val_override >= max_val_override:
+                print(
+                    "Warning: value_range min must be less than max. Ignoring provided value_range."
+                )
+                min_val_override, max_val_override = None, None
+        else:
+            print(
+                "Warning: value_range must be a tuple of two numbers (min, max). Ignoring provided value_range."
+            )
 
     # Check if we can reuse existing data
     # Note: If sample_indices is provided, we should not reuse existing data
@@ -1312,7 +1349,6 @@ def aggregate_data(
         except (FileNotFoundError, ValueError) as e:
             if verbose:
                 print(f"Could not check file shots: {e}. Reprocessing.")
-
     elif sample_indices is not None and verbose:
         print("Sample indices provided. Skipping existing data reuse and reprocessing.")
 
@@ -1320,7 +1356,6 @@ def aggregate_data(
     if verbose:
         print(f"Processing data directory: {data_dir}")
         print(f"Aggregation method: {by}")
-        print(f"Decimal places: {decimals}")
         if norm_order is not None:
             print(f"Norm order: {norm_order}")
         if sample_indices is not None:
@@ -1330,14 +1365,15 @@ def aggregate_data(
 
     df_agg, total_rows_processed = calculate_df_agg_for_combination(
         data_dir=data_dir,
-        decimals=decimals,
+        num_hist_bins=num_hist_bins,
+        min_value_override=min_val_override,
+        max_value_override=max_val_override,
         ascending_confidence=ascending_confidence,
         by=by,
         norm_order=norm_order,
         priors=priors,
         sample_indices=sample_indices,
         verbose=verbose,
-        disable_tqdm=disable_tqdm,
     )
 
     if verbose:
@@ -1345,7 +1381,7 @@ def aggregate_data(
             print("No data was processed successfully.")
         else:
             print(
-                f"Successfully aggregated {total_rows_processed} samples into {len(df_agg)} groups."
+                f"Successfully aggregated {total_rows_processed} samples into {len(df_agg)} bins."
             )
 
     return df_agg, False

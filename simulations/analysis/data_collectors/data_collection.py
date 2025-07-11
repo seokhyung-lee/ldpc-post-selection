@@ -9,8 +9,6 @@ from joblib import Parallel, delayed
 from .data_aggregation import aggregate_data
 from .data_post_processing import get_df_ps
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-
 
 def load_existing_df(
     dataset: str, method: str, param_combo_str: str, data_type: str = "aggregated"
@@ -141,7 +139,7 @@ def process_single_subdirectory(
     method_name: str,
     by: str,
     order: Optional[float],
-    decimals: int,
+    num_hist_bins: int,
     ascending_confidence: bool,
     verbose: bool,
 ) -> Dict[str, str | bool]:
@@ -160,8 +158,8 @@ def process_single_subdirectory(
         Aggregation method.
     order : Optional[float]
         Norm order for norm-based methods.
-    decimals : int
-        Number of decimal places to round to.
+    num_hist_bins : int
+        Number of histogram bins.
     ascending_confidence : bool
         Whether to use ascending confidence.
     verbose : bool
@@ -213,7 +211,7 @@ def process_single_subdirectory(
                 subdir_path,  # Process individual subdirectory
                 by=by,
                 norm_order=order,
-                decimals=decimals,
+                num_hist_bins=num_hist_bins,
                 ascending_confidence=ascending_confidence,
                 df_existing=existing_df_agg,
                 verbose=verbose,
@@ -271,18 +269,12 @@ def process_single_subdirectory(
         }
 
 
-def determine_decimals(by: str) -> int:
-    if by == "detector_density":
-        return 4
-    else:
-        return 2
-
-
 def process_dataset(
     data_dir: str,
     dataset_name: str,
     ascending_confidences: Dict[str, bool],
     orders: Optional[List[float]] = None,
+    num_hist_bins: int = 10000,
     verbose: bool = False,
     dataset_type: Optional[str] = None,
     n_jobs: int = -1,
@@ -302,8 +294,8 @@ def process_dataset(
     orders : Optional[List[float]], optional
         List of norm orders to use for norm-based methods.
         If None, defaults to [0.5, 1, 2, np.inf]. Only used for norm-based methods.
-    decimals : int, optional
-        Number of decimal places to round to. Defaults to 3.
+    num_hist_bins : int, optional
+        Number of histogram bins. Defaults to 10000.
     verbose : bool, optional
         Whether to print detailed progress information. Defaults to False.
     dataset_type : Optional[str], optional
@@ -322,7 +314,6 @@ def process_dataset(
 
     # Set default orders if not provided
     for by, ascending_confidence in ascending_confidences.items():
-        decimals = determine_decimals(by)
         print(
             f"\nAggregating data for {by} with ascending_confidence={ascending_confidence}..."
         )
@@ -349,22 +340,24 @@ def process_dataset(
                 print("No subdirectories found to process.")
                 continue
 
-            print(f"Processing {len(subdirs_info)} subdirectories...")
+            print(
+                f"Processing {len(subdirs_info)} subdirectories in parallel with {n_jobs} jobs..."
+            )
 
             # Process subdirectories in parallel using joblib
-            results = [
-                process_single_subdirectory(
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(process_single_subdirectory)(
                     subdir_info,
                     dataset_name,
                     method_name,
                     by,
                     order,
-                    decimals,
+                    num_hist_bins,
                     ascending_confidence,
                     verbose,
                 )
                 for subdir_info in subdirs_info
-            ]
+            )
 
             # Process and report results
             successful_count = 0

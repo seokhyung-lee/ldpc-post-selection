@@ -2,10 +2,10 @@ import stim
 
 from color_code_stim import ColorCode
 
-from .SlidingWindowDecoder.src.build_circuit import (
+from ext.SlidingWindowDecoder.src.build_circuit import (
     build_circuit as build_BB_circuit_swd,
 )
-from .SlidingWindowDecoder.src.codes_q import (
+from ext.SlidingWindowDecoder.src.codes_q import (
     create_bivariate_bicycle_codes,
 )
 from ldpc_post_selection.stim_tools import remove_detectors_from_circuit

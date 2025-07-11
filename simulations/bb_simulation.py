@@ -13,9 +13,6 @@ from simulations.utils.simulation_utils import (
     get_existing_shots,
     bplsd_simulation_task_parallel,
 )
-from simulations.utils.simulation_utils_legacy import (
-    bplsd_simulation_task_parallel_legacy,
-)
 from simulations.utils.build_circuit import build_BB_circuit, get_BB_distance
 
 
@@ -163,16 +160,16 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = np.arange(1e-3, 6.1e-3, 1e-3).round(4)
-    nlist = [72, 144]  # [72, 108, 144, 288]
+    plist = [3e-3]
+    nlist = [72]  # [72, 108, 144, 288]
 
-    shots_per_batch = round(1e7)
-    total_shots = round(1e7)
-    compute_logical_gap_proxy = False
-    include_cluster_stats = True
+    shots_per_batch = round(5e4)
+    total_shots = round(1e6)
+    compute_logical_gap_proxy = True
+    include_cluster_stats = False
     n_jobs = 18
     repeat = 10
-    dir_name = "bb_minsum_iter30_lsd0_raw"
+    dir_name = "bb_minsum_iter30_lsd0_gapproxy"
 
     # Estimated time (19 cores):
     # p=1e-3, n=144: 100,000 shots/min
