@@ -599,6 +599,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         window_cluster_sizes = []
         window_cluster_llrs = []
         committed_clusters_mask = np.zeros(self.H.shape[1], dtype=bool)
+        committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
 
         if verbose:
             print(f"Max detector time: {max_time}")
@@ -632,7 +633,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             H_window: csc_matrix = self.H[window_detector_mask, :]
 
             # Find columns (faults) that have at least one nonzero element
+            # Exclude already-committed faults from this window
             fault_mask = np.asarray(H_window.sum(axis=0) > 0).ravel()
+            fault_mask = fault_mask & ~committed_faults_mask
 
             if not np.any(fault_mask):
                 if verbose:
@@ -698,7 +701,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                     H_commit_rows = self.H[commit_detector_mask, :]
                     commit_fault_mask = np.asarray(
                         H_commit_rows.sum(axis=0) > 0
-                    ).flatten()
+                    ).ravel()
+                    # Exclude already committed faults from commit region
+                    commit_fault_mask = commit_fault_mask & ~committed_faults_mask
 
                     pred_to_commit = pred_window.copy()
                     pred_to_commit[~commit_fault_mask] = False
@@ -716,6 +721,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             committed_clusters_window[~commit_mask] = 0
             committed_clusters_mask[committed_clusters_window > 0] = True
 
+            # Update committed faults mask with all faults in commit region
+            committed_faults_mask |= commit_mask
+            
             # Update detector outcomes and prediction
             detector_update = ((pred_to_commit.astype(np.uint8) @ self.H.T) % 2).astype(
                 bool
