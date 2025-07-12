@@ -160,14 +160,17 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = np.arange(1e-3, 3.1e-3, 1e-3).round(4)
-    # plist = [0.015]
-    d_list = [5]
+    prms = []
+    for d in [9, 13]:
+        max_p = 5e-3
+        for p in np.arange(1e-3, max_p + 1e-4, 1e-3).round(4):
+            prms.append((d, p))
+
     noise_model = "circuit-level"
     # noise_model = "phenom"
 
-    shots_per_batch = round(1e8)
-    total_shots = round(1e9)
+    shots_per_batch = round(1e7)
+    total_shots = round(3e8)
     n_jobs = 18
     repeat = 10
 
@@ -179,30 +182,34 @@ if __name__ == "__main__":
     }
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "data/surface_minsum_iter30_lsd0_raw")
+    if noise_model == "circuit-level":
+        data_dir_name = "surface_minsum_iter30_lsd0_raw"
+    elif noise_model == "phenom":
+        data_dir_name = "surface_minsum_iter30_lsd0_phenom_raw"
+    else:
+        raise ValueError(f"Invalid noise model: {noise_model}")
+
+    data_dir = os.path.join(current_dir, "data", data_dir_name)
     os.makedirs(data_dir, exist_ok=True)
 
-    print("d_list =", d_list)
-    print("plist =", plist)
     print("decoder_prms =", decoder_prms)
 
     print(f"\n==== Starting simulations up to {total_shots} shots ====")
-    for d_val in d_list:
-        for i_p, p in enumerate(plist):
-            T = d_val
-            print(f"\n--- Simulating d={d_val}, p={p}, T={T} ---")
-            simulate(
-                shots=total_shots,
-                p=p,
-                d=d_val,
-                T=T,
-                data_dir=data_dir,
-                n_jobs=n_jobs,
-                repeat=repeat,
-                shots_per_batch=shots_per_batch,
-                decoder_prms=decoder_prms,
-                noise_model=noise_model,
-            )
+    for d, p in prms:
+        T = d
+        print(f"\n--- Simulating d={d}, p={p}, T={T} ---")
+        simulate(
+            shots=total_shots,
+            p=p,
+            d=d,
+            T=T,
+            data_dir=data_dir,
+            n_jobs=n_jobs,
+            repeat=repeat,
+            shots_per_batch=shots_per_batch,
+            decoder_prms=decoder_prms,
+            noise_model=noise_model,
+        )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==== Simulations completed ({t0}) ====")
