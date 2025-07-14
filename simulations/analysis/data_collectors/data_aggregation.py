@@ -346,7 +346,6 @@ def _get_values_for_binning_from_batch(
                     cluster_data_list=cluster_data_list,
                     norm_order=norm_order,
                     aggregation_type=aggregation_type,
-                    value_type=value_type,
                 )
                 timing_info["cluster_calculation_time"] = (
                     time.perf_counter() - start_calc
@@ -710,7 +709,6 @@ def calculate_df_agg_for_combination(
     norm_order: float | None = None,
     priors: np.ndarray | None = None,
     sample_indices: np.ndarray | None = None,
-    n_jobs: int = 1,
     verbose: bool = False,
     disable_tqdm: bool = False,
 ) -> Tuple[pd.DataFrame, int]:
@@ -762,9 +760,6 @@ def calculate_df_agg_for_combination(
         1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
     sample_indices : np.ndarray, optional
         Array of global sample indices to include in the aggregation. If None, all samples are included.
-    n_jobs : int, optional
-        Number of jobs to run in parallel for batch processing. If 1 (default), processing is sequential.
-        If -1, all available CPU cores are used.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
     disable_tqdm : bool, optional
@@ -800,43 +795,22 @@ def calculate_df_agg_for_combination(
             f"Using decimal places: {decimals}, ascending_confidence: {ascending_confidence}"
         )
 
-    # Process all batches (parallel or sequential)
-    if n_jobs == 1:
-        # Sequential processing
-        (
-            df_agg,
-            total_rows_processed,
-            total_samples_considered,
-            detailed_timing,
-        ) = _process_and_aggregate_batches_single_pass(
-            batch_dir_paths,
-            by,
-            decimals,
-            ascending_confidence,
-            norm_order,
-            priors,
-            sample_indices,
-            verbose,
-            disable_tqdm,
-        )
-    else:
-        # Parallel processing
-        (
-            df_agg,
-            total_rows_processed,
-            total_samples_considered,
-            detailed_timing,
-        ) = _process_and_aggregate_batches_parallel(
-            batch_dir_paths,
-            by,
-            decimals,
-            ascending_confidence,
-            norm_order,
-            priors,
-            sample_indices,
-            n_jobs,
-            verbose,
-        )
+    (
+        df_agg,
+        total_rows_processed,
+        total_samples_considered,
+        detailed_timing,
+    ) = _process_and_aggregate_batches_single_pass(
+        batch_dir_paths,
+        by,
+        decimals,
+        ascending_confidence,
+        norm_order,
+        priors,
+        sample_indices,
+        verbose,
+        disable_tqdm,
+    )
 
     # Print detailed benchmarking results if verbose
     if verbose:
@@ -1502,24 +1476,52 @@ def aggregate_data(
         if "count" not in df_existing_copy.columns:
             raise ValueError("df_existing does not have a 'count' column.")
 
-        try:
-            existing_total_shots = df_existing_copy["count"].sum()
-            file_total_shots, _ = get_existing_shots(data_dir)
+        # Check if decimals parameter matches the precision used in df_existing
+        def _detect_decimals_from_index(index_values: pd.Index) -> int:
+            """Detect the number of decimal places used in the index values."""
+            if len(index_values) == 0:
+                return decimals  # Default to current decimals if empty
 
-            if existing_total_shots == file_total_shots:
-                if verbose:
-                    print(
-                        f"Existing shots ({existing_total_shots}) match file shots ({file_total_shots}). Returning existing data."
-                    )
-                return df_existing_copy, True
-            else:
-                if verbose:
-                    print(
-                        f"Existing shots ({existing_total_shots}) != file shots ({file_total_shots}). Reprocessing."
-                    )
-        except (FileNotFoundError, ValueError) as e:
+            # Check only first 10 values for efficiency
+            sample_values = index_values[:10]
+            
+            # Convert to string and find maximum decimal places
+            max_decimals = 0
+            for value in sample_values:
+                if pd.isna(value):
+                    continue
+                str_value = f"{float(value):.15f}".rstrip("0").rstrip(".")
+                if "." in str_value:
+                    decimal_places = len(str_value.split(".")[1])
+                    max_decimals = max(max_decimals, decimal_places)
+            return max_decimals
+
+        existing_decimals = _detect_decimals_from_index(df_existing_copy.index)
+
+        if existing_decimals != decimals:
             if verbose:
-                print(f"Could not check file shots: {e}. Reprocessing.")
+                print(
+                    f"Existing decimals ({existing_decimals}) != current decimals ({decimals}). Reprocessing."
+                )
+        else:
+            try:
+                existing_total_shots = df_existing_copy["count"].sum()
+                file_total_shots, _ = get_existing_shots(data_dir)
+
+                if existing_total_shots == file_total_shots:
+                    if verbose:
+                        print(
+                            f"Existing shots ({existing_total_shots}) match file shots ({file_total_shots}) and decimals match ({decimals}). Returning existing data."
+                        )
+                    return df_existing_copy, True
+                else:
+                    if verbose:
+                        print(
+                            f"Existing shots ({existing_total_shots}) != file shots ({file_total_shots}). Reprocessing."
+                        )
+            except (FileNotFoundError, ValueError) as e:
+                if verbose:
+                    print(f"Could not check file shots: {e}. Reprocessing.")
 
     elif sample_indices is not None and verbose:
         print("Sample indices provided. Skipping existing data reuse and reprocessing.")
