@@ -106,6 +106,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         self._window_structure_cache: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
         self._decoder_cache: Dict[str, SoftOutputsBpLsdDecoder] = {}
 
+        # Precompute adjacency matrix for efficient cluster labeling
+        self._adjacency_matrix = (self.H.T @ self.H == 1).astype(bool)
+
     @property
     def detector_time_coords(self) -> np.ndarray:
         if self._detector_time_coords is not None:
@@ -1067,16 +1070,26 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         if _benchmarking:
             finalization_start = time.time()
+            convert_start = time.time()
 
         # Convert committed clusters mask to cluster index array using label_clusters
-        adj_matrix = (self.H.T @ self.H == 1).astype(bool)
+        adj_matrix = self._adjacency_matrix
         vertices_inside_clusters = np.where(committed_clusters_mask)[0]
         committed_clusters_idx = label_clusters(adj_matrix, vertices_inside_clusters)
+
+        if _benchmarking:
+            convert_time = time.time() - convert_start
+            print(f"[Benchmarking] Finalization - Convert part: {convert_time:.6f}s")
+            compute_start = time.time()
 
         # Compute committed cluster statistics
         committed_cluster_sizes, committed_cluster_llrs = compute_cluster_stats(
             committed_clusters_idx, self.bit_llrs
         )
+
+        if _benchmarking:
+            compute_time = time.time() - compute_start
+            print(f"[Benchmarking] Finalization - Compute part: {compute_time:.6f}s")
 
         # Create aggregated soft outputs
         soft_outputs = {
