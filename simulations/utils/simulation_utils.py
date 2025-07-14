@@ -375,6 +375,189 @@ def bplsd_simulation_task_parallel(
     return df, clusters_csr, preds_csr, preds_bp_csr
 
 
+def bplsd_sliding_window_simulation_task_single(
+    shots: int,
+    circuit: stim.Circuit,
+    window_size: int,
+    commit_size: int,
+    decoder_prms: Dict[str, Any] | None = None,
+) -> Tuple[
+    np.ndarray,
+    List[List[np.ndarray]],
+    List[List[np.ndarray]],
+    List[List[np.ndarray]],
+    List[List[np.ndarray]],
+]:
+    """
+    Run a single sliding window simulation task for a given circuit and decoder parameters.
+
+    Parameters
+    ----------
+    shots : int
+        Number of shots to simulate.
+    circuit : stim.Circuit
+        The pre-built quantum error correction circuit.
+    window_size : int
+        Number of rounds in each window.
+    commit_size : int
+        Number of rounds for each commitment.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the SoftOutputsBpLsdDecoder.
+
+    Returns
+    -------
+    fails : 1D numpy array of bool
+        Boolean array indicating if the decoding failed for each shot.
+    cluster_sizes : list of list of 1D numpy array of int
+        List of cluster sizes from all windows for each shot.
+    cluster_llrs : list of list of 1D numpy array of float
+        List of cluster LLRs from all windows for each shot.
+    committed_cluster_sizes : list of list of 1D numpy array of int
+        List of committed cluster sizes after each window for each shot.
+    committed_cluster_llrs : list of list of 1D numpy array of float
+        List of committed cluster LLRs after each window for each shot.
+    """
+    if decoder_prms is None:
+        decoder_prms = {}
+    
+    # Create decoder
+    decoder = SoftOutputsBpLsdDecoder(
+        circuit=circuit,
+        **decoder_prms,
+    )
+    
+    fails_list = []
+    cluster_sizes_list = []
+    cluster_llrs_list = []
+    committed_cluster_sizes_list = []
+    committed_cluster_llrs_list = []
+    
+    for shot_idx in range(shots):
+        # Use simulate_single with sliding window
+        fail, soft_outputs = decoder.simulate_single(
+            sliding_window=True,
+            seed=shot_idx,  # Use shot index as seed for reproducibility
+            window_size=window_size,
+            commit_size=commit_size,
+        )
+        
+        fails_list.append(fail)
+        
+        # Extract all window cluster data
+        cluster_sizes_list.append(soft_outputs["cluster_sizes"])
+        cluster_llrs_list.append(soft_outputs["cluster_llrs"])
+        
+        # Extract all committed cluster data
+        committed_cluster_sizes_list.append(soft_outputs["committed_cluster_sizes"])
+        committed_cluster_llrs_list.append(soft_outputs["committed_cluster_llrs"])
+    
+    fails_arr = np.array(fails_list)
+    
+    return (
+        fails_arr,
+        cluster_sizes_list,
+        cluster_llrs_list,
+        committed_cluster_sizes_list,
+        committed_cluster_llrs_list,
+    )
+
+
+def bplsd_sliding_window_simulation_task_parallel(
+    shots: int,
+    circuit: stim.Circuit,
+    window_size: int,
+    commit_size: int,
+    n_jobs: int,
+    repeat: int = 10,
+    decoder_prms: Dict[str, Any] | None = None,
+) -> Tuple[
+    np.ndarray,
+    List[List[np.ndarray]],
+    List[List[np.ndarray]],
+    List[List[np.ndarray]],
+    List[List[np.ndarray]],
+]:
+    """
+    Run sliding window simulations in parallel and return results.
+
+    Parameters
+    ----------
+    shots : int
+        Total number of shots to simulate.
+    circuit : stim.Circuit
+        The pre-built quantum error correction circuit.
+    window_size : int
+        Number of rounds in each window.
+    commit_size : int
+        Number of rounds for each commitment.
+    n_jobs : int
+        Number of parallel jobs.
+    repeat : int
+        Number of repeats for parallel execution.
+    decoder_prms : Dict[str, Any], optional
+        Parameters for the decoder.
+
+    Returns
+    -------
+    fails : 1D numpy array of bool
+        Boolean array indicating if the decoding failed for each shot.
+    cluster_sizes : list of list of 1D numpy array of int
+        List of cluster sizes from all windows for each shot.
+    cluster_llrs : list of list of 1D numpy array of float
+        List of cluster LLRs from all windows for each shot.
+    committed_cluster_sizes : list of list of 1D numpy array of int
+        List of committed cluster sizes after each window for each shot.
+    committed_cluster_llrs : list of list of 1D numpy array of float
+        List of committed cluster LLRs after each window for each shot.
+    """
+    if shots == 0:
+        raise ValueError("Total number of shots to simulate must be greater than 0.")
+    
+    # Make a copy to avoid modifying the original
+    decoder_prms_copy = decoder_prms.copy() if decoder_prms else {}
+    
+    # Divide shots among jobs
+    chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
+    
+    # Execute tasks in parallel
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(bplsd_sliding_window_simulation_task_single)(
+            shots=chunk,
+            circuit=circuit,
+            window_size=window_size,
+            commit_size=commit_size,
+            decoder_prms=decoder_prms_copy.copy(),  # Copy for each job
+        )
+        for chunk in chunk_sizes
+    )
+    
+    # Unpack and combine results
+    (
+        fails_l,
+        cluster_sizes_l,
+        cluster_llrs_l,
+        committed_cluster_sizes_l,
+        committed_cluster_llrs_l,
+    ) = zip(*results)
+    
+    # Combine fails into single array
+    fails = np.concatenate(fails_l)
+    
+    # Flatten lists of cluster data (list of lists structure)
+    cluster_sizes = [item for sublist in cluster_sizes_l for item in sublist]
+    cluster_llrs = [item for sublist in cluster_llrs_l for item in sublist]
+    committed_cluster_sizes = [item for sublist in committed_cluster_sizes_l for item in sublist]
+    committed_cluster_llrs = [item for sublist in committed_cluster_llrs_l for item in sublist]
+    
+    return (
+        fails,
+        cluster_sizes,
+        cluster_llrs,
+        committed_cluster_sizes,
+        committed_cluster_llrs,
+    )
+
+
 def matching_simulation_task_single(
     shots: int,
     circuit: stim.Circuit,
