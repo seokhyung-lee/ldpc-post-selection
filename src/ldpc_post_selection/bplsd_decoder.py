@@ -802,9 +802,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             - clusters: list of cluster assignments for each window
             - cluster_sizes: list of cluster sizes for each window
             - cluster_llrs: list of cluster LLRs for each window
-            - committed_clusters: 1D numpy array of int with cluster labels for committed faults (0 = not in cluster, 1+ = cluster ID)
-            - committed_cluster_sizes: 1D numpy array of int with sizes of committed clusters
-            - committed_cluster_llrs: 1D numpy array of float with LLR sums of committed clusters
+            - committed_clusters: list of cluster assignments (restricted to committed region so far) after each window (last element is final committed clusters)
+            - committed_cluster_sizes: list of cluster sizes (restricted to committed region so far) after each window
+            - committed_cluster_llrs: list of cluster LLRs (restricted to committed region so far) after each window
         """
         if window_size <= commit_size:
             raise ValueError("W must be greater than F")
@@ -849,6 +849,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         window_cluster_llrs = []
         committed_clusters_mask = np.zeros(self.H.shape[1], dtype=bool)
         all_committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
+
+        # Storage for window-wise committed clusters
+        window_committed_clusters = []
+        window_committed_cluster_sizes = []
+        window_committed_cluster_llrs = []
 
         if _benchmarking:
             print(f"[Benchmarking] Initialization: {time.time() - step_start:.6f}s")
@@ -1032,6 +1037,30 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             # Update committed faults mask with all faults in commit region
             all_committed_faults_mask |= commit_mask
 
+            # Compute committed clusters for this window
+            vertices_inside_clusters_window = np.where(committed_clusters_mask)[0]
+            if len(vertices_inside_clusters_window) > 0:
+                # Ensure adjacency matrix is computed
+                adj_matrix = self._adjacency_matrix
+                committed_clusters = label_clusters(
+                    adj_matrix, vertices_inside_clusters_window
+                )
+                # Compute statistics only within committed region
+                committed_mask = all_committed_faults_mask
+                committed_cluster_sizes, committed_cluster_llrs = compute_cluster_stats(
+                    committed_clusters[committed_mask], self.bit_llrs[committed_mask]
+                )
+            else:
+                # No committed clusters yet
+                committed_clusters = np.zeros(self.H.shape[1], dtype=int)
+                committed_cluster_sizes = np.array([], dtype=int)
+                committed_cluster_llrs = np.array([], dtype=float)
+
+            # Store window-wise committed clusters
+            window_committed_clusters.append(committed_clusters)
+            window_committed_cluster_sizes.append(committed_cluster_sizes)
+            window_committed_cluster_llrs.append(committed_cluster_llrs)
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["update_masks"].append(elapsed)
@@ -1068,53 +1097,29 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
             w += 1
 
-        if _benchmarking:
-            finalization_start = time.time()
-            convert_start = time.time()
-
-        # Convert committed clusters mask to cluster index array using label_clusters
-        adj_matrix = self._adjacency_matrix
-        vertices_inside_clusters = np.where(committed_clusters_mask)[0]
-        committed_clusters_idx = label_clusters(adj_matrix, vertices_inside_clusters)
-
-        if _benchmarking:
-            convert_time = time.time() - convert_start
-            print(f"[Benchmarking] Finalization - Convert part: {convert_time:.6f}s")
-            compute_start = time.time()
-
-        # Compute committed cluster statistics
-        committed_cluster_sizes, committed_cluster_llrs = compute_cluster_stats(
-            committed_clusters_idx, self.bit_llrs
-        )
-
-        if _benchmarking:
-            compute_time = time.time() - compute_start
-            print(f"[Benchmarking] Finalization - Compute part: {compute_time:.6f}s")
-
         # Create aggregated soft outputs
         soft_outputs = {
             "clusters": window_clusters,
             "cluster_sizes": window_cluster_sizes,
             "cluster_llrs": window_cluster_llrs,
-            "committed_clusters": committed_clusters_idx,
-            "committed_cluster_sizes": committed_cluster_sizes,
-            "committed_cluster_llrs": committed_cluster_llrs,
+            "committed_clusters": window_committed_clusters,
+            "committed_cluster_sizes": window_committed_cluster_sizes,
+            "committed_cluster_llrs": window_committed_cluster_llrs,
         }
-
-        if _benchmarking:
-            print(
-                f"[Benchmarking] Finalization: {time.time() - finalization_start:.6f}s"
-            )
 
         if verbose:
             print(f"\nSliding window decoding completed!")
             print(f"Total windows processed: {len(window_clusters)}")
             print(f"Final prediction weight: {pred.sum()}")
-            print(
-                f"Committed clusters: {(committed_clusters_idx > 0).sum()} faults in {committed_clusters_idx.max()} clusters"
-            )
-            print(f"Committed cluster sizes: {committed_cluster_sizes}")
-            print(f"Committed cluster LLRs: {committed_cluster_llrs}")
+            if window_committed_clusters:
+                final_committed_clusters = window_committed_clusters[-1]
+                final_committed_sizes = window_committed_cluster_sizes[-1]
+                final_committed_llrs = window_committed_cluster_llrs[-1]
+                print(
+                    f"Committed clusters: {(final_committed_clusters > 0).sum()} faults in {final_committed_clusters.max()} clusters"
+                )
+                print(f"Committed cluster sizes: {final_committed_sizes}")
+                print(f"Committed cluster LLRs: {final_committed_llrs}")
 
         if _benchmarking:
             total_time = time.time() - start_time
