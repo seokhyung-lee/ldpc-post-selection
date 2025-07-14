@@ -1,6 +1,8 @@
 from itertools import product
+import random
+import hashlib
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Self
 
 import numpy as np
 import stim
@@ -99,6 +101,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         except TypeError:
             self._detector_time_coords = None
             self._det_time_coord_index = detector_time_coords
+
+        # Initialize caches for sliding window decoding
+        self._window_structure_cache: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
+        self._decoder_cache: Dict[str, SoftOutputsBpLsdDecoder] = {}
 
     @property
     def detector_time_coords(self) -> np.ndarray:
@@ -391,6 +397,151 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         return gap_proxy, best_pred, best_pred_llr
 
+    def _hash_matrix_and_priors(self, H_matrix: csc_matrix, priors: np.ndarray) -> str:
+        """
+        Generate a hash key for a matrix and priors combination.
+
+        Parameters
+        ----------
+        H_matrix : scipy csc_matrix
+            The parity check matrix.
+        priors : 1D numpy array of float
+            The error probabilities.
+
+        Returns
+        -------
+        hash_key : str
+            Hash string representing the matrix and priors configuration.
+        """
+        # Create a hash based on matrix structure and priors
+        hasher = hashlib.md5()
+
+        # Hash matrix shape
+        hasher.update(str(H_matrix.shape).encode())
+
+        # Hash matrix data (indices and indptr are sufficient for structure)
+        hasher.update(H_matrix.indices.tobytes())
+        hasher.update(H_matrix.indptr.tobytes())
+
+        # Hash priors
+        hasher.update(priors.tobytes())
+
+        return hasher.hexdigest()
+
+    def _get_or_create_window_structure(
+        self, window_size: int, commit_size: int, window_position: int
+    ) -> Dict[str, Any]:
+        """
+        Get or create cached window structure for a given window configuration.
+
+        Parameters
+        ----------
+        window_size : int
+            Number of rounds in each window.
+        commit_size : int
+            Number of rounds for each commitment.
+        window_position : int
+            The window index (w).
+
+        Returns
+        -------
+        window_structure : dict
+            Cached window structure containing:
+            - window_detector_mask: boolean mask for detectors in this window
+            - H_window_base: H matrix rows for this window (before fault filtering)
+            - window_start: start time of window
+            - window_end: end time of window
+        """
+        cache_key = (window_size, commit_size, window_position)
+
+        if cache_key in self._window_structure_cache:
+            return self._window_structure_cache[cache_key]
+
+        # Compute window structure
+        detector_times = self.detector_time_coords
+        window_start = window_position * commit_size
+        window_end = window_position * commit_size + window_size - 1
+
+        # Extract detectors within window time range
+        window_detector_mask = (detector_times >= window_start) & (
+            detector_times <= window_end
+        )
+
+        # Extract corresponding rows from H matrix
+        H_window_base = self.H[window_detector_mask, :]
+
+        window_structure = {
+            "window_detector_mask": window_detector_mask,
+            "H_window_base": H_window_base,
+            "window_start": window_start,
+            "window_end": window_end,
+        }
+
+        # Cache the structure
+        self._window_structure_cache[cache_key] = window_structure
+        return window_structure
+
+    def _get_or_create_window_decoder(
+        self, H_window: csc_matrix, p_window: np.ndarray
+    ) -> Self:
+        """
+        Get or create a cached decoder for the given H matrix and priors.
+
+        Parameters
+        ----------
+        H_window : scipy csc_matrix
+            The window parity check matrix.
+        p_window : 1D numpy array of float
+            The window error probabilities.
+
+        Returns
+        -------
+        decoder : SoftOutputsBpLsdDecoder
+            Cached or newly created decoder.
+        """
+        # Generate hash key for this configuration
+        hash_key = self._hash_matrix_and_priors(H_window, p_window)
+
+        if hash_key in self._decoder_cache:
+            return self._decoder_cache[hash_key]
+
+        # Create new decoder
+        window_decoder = SoftOutputsBpLsdDecoder(
+            H=H_window,
+            p=p_window,
+            obs_matrix=None,
+            **self._bplsd_kwargs,
+        )
+
+        # Cache the decoder
+        self._decoder_cache[hash_key] = window_decoder
+        return window_decoder
+
+    def clear_caches(self) -> None:
+        """
+        Clear all caches for window structures and decoders.
+
+        This can be useful to free memory or when the decoder configuration changes.
+        """
+        self._window_structure_cache.clear()
+        self._decoder_cache.clear()
+
+    def get_cache_info(self) -> Dict[str, int]:
+        """
+        Get information about cache usage.
+
+        Returns
+        -------
+        cache_info : dict
+            Dictionary containing cache sizes:
+            - window_structures: number of cached window structures
+            - decoders: number of cached decoders
+        """
+        return {
+            "window_structures": len(self._window_structure_cache),
+            "decoders": len(self._decoder_cache),
+        }
+
     def decode(
         self,
         detector_outcomes: np.ndarray | List[bool | int],
@@ -444,7 +595,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         """
         if verbose:
             print("Starting BP+LSD decoding...")
-        
+
         if _benchmarking:
             start_time = time.time()
             step_start = time.time()
@@ -456,7 +607,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         detector_outcomes = np.asarray(detector_outcomes, dtype=bool)
         if detector_outcomes.ndim > 1:
             raise ValueError("Detector outcomes must be a 1D array")
-        
+
         if _benchmarking:
             print(f"[Benchmarking] Input processing: {time.time() - step_start:.6f}s")
             step_start = time.time()
@@ -469,7 +620,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         pred, pred_bp = bplsd.decode(detector_outcomes, custom=True)
         pred: np.ndarray = pred.astype(bool)
         pred_bp: np.ndarray = pred_bp.astype(bool)
-        
+
         if _benchmarking:
             print(f"[Benchmarking] BP+LSD decoding: {time.time() - step_start:.6f}s")
             step_start = time.time()
@@ -494,9 +645,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         llrs = self.bit_llrs
         # bp_llrs = np.array(stats["bit_llrs"])
         # bp_llrs_plus = np.clip(bp_llrs, 0.0, None)
-        
+
         if _benchmarking:
-            print(f"[Benchmarking] LLRs extraction: {time.time() - soft_info_start:.6f}s")
+            print(
+                f"[Benchmarking] LLRs extraction: {time.time() - soft_info_start:.6f}s"
+            )
             soft_info_start = time.time()
 
         # Prediction LLR
@@ -507,9 +660,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         soft_outputs["detector_density"] = detector_outcomes.sum() / len(
             detector_outcomes
         )
-        
+
         if _benchmarking:
-            print(f"[Benchmarking] Basic soft outputs (pred_llr, detector_density): {time.time() - soft_info_start:.6f}s")
+            print(
+                f"[Benchmarking] Basic soft outputs (pred_llr, detector_density): {time.time() - soft_info_start:.6f}s"
+            )
             step_start = time.time()
 
         if verbose:
@@ -519,7 +674,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         if include_cluster_stats:
             if verbose:
                 print("Computing cluster statistics...")
-            
+
             if _benchmarking:
                 cluster_start = time.time()
 
@@ -534,24 +689,30 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                     final_bits = data["final_bits"]
                     clusters[final_bits] = cluster_id
                     cluster_id += 1
-            
+
             if _benchmarking:
-                print(f"[Benchmarking] Build cluster assignments: {time.time() - cluster_start:.6f}s")
+                print(
+                    f"[Benchmarking] Build cluster assignments: {time.time() - cluster_start:.6f}s"
+                )
                 cluster_start = time.time()
 
             # Calculate cluster statistics
             cluster_sizes, cluster_llrs = compute_cluster_stats(clusters, llrs)
-            
+
             if _benchmarking:
-                print(f"[Benchmarking] Compute cluster statistics: {time.time() - cluster_start:.6f}s")
+                print(
+                    f"[Benchmarking] Compute cluster statistics: {time.time() - cluster_start:.6f}s"
+                )
                 cluster_start = time.time()
 
             soft_outputs["clusters"] = clusters  # 1D array of int
             soft_outputs["cluster_sizes"] = cluster_sizes
             soft_outputs["cluster_llrs"] = cluster_llrs
-            
+
             if _benchmarking:
-                print(f"[Benchmarking] Store cluster outputs: {time.time() - cluster_start:.6f}s")
+                print(
+                    f"[Benchmarking] Store cluster outputs: {time.time() - cluster_start:.6f}s"
+                )
                 step_start = time.time()
 
             if verbose:
@@ -561,10 +722,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         if compute_logical_gap_proxy:
             if verbose:
                 print("Computing logical gap proxy...")
-            
+
             if _benchmarking:
                 gap_start = time.time()
-            
+
             gap_proxy, best_pred, best_pred_llr = self._compute_logical_gap_proxy(
                 detector_outcomes,
                 pred,
@@ -572,11 +733,13 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 explore_only_nearby_logical_classes,
                 verbose=verbose,
             )
-            
+
             if _benchmarking:
-                print(f"[Benchmarking] Logical gap proxy computation: {time.time() - gap_start:.6f}s")
+                print(
+                    f"[Benchmarking] Logical gap proxy computation: {time.time() - gap_start:.6f}s"
+                )
                 gap_start = time.time()
-            
+
             soft_outputs["gap_proxy"] = gap_proxy
 
             # Update prediction and related soft outputs if a better one was found
@@ -587,14 +750,16 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                     )
                 pred = best_pred
                 soft_outputs["pred_llr"] = best_pred_llr
-            
+
             if _benchmarking:
-                print(f"[Benchmarking] Update prediction from gap proxy: {time.time() - gap_start:.6f}s")
+                print(
+                    f"[Benchmarking] Update prediction from gap proxy: {time.time() - gap_start:.6f}s"
+                )
                 step_start = time.time()
 
         if verbose:
             print("BP+LSD decoding process completed!")
-        
+
         if _benchmarking:
             print(f"[Benchmarking] Total decode time: {time.time() - start_time:.6f}s")
 
@@ -649,7 +814,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             print(
                 f"Starting sliding window decoding with W={window_size}, F={commit_size}"
             )
-        
+
         if _benchmarking:
             start_time = time.time()
             step_start = time.time()
@@ -665,7 +830,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 "determine_commits": [],
                 "update_masks": [],
                 "update_detectors_prediction": [],
-                "window_total": []
+                "window_total": [],
             }
 
         # Initialize prediction array
@@ -680,8 +845,8 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         window_cluster_sizes = []
         window_cluster_llrs = []
         committed_clusters_mask = np.zeros(self.H.shape[1], dtype=bool)
-        committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
-        
+        all_committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
+
         if _benchmarking:
             print(f"[Benchmarking] Initialization: {time.time() - step_start:.6f}s")
             step_start = time.time()
@@ -694,7 +859,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         while True:
             if _benchmarking:
                 window_start_time = time.time()
-            
+
             window_start = w * commit_size
             window_end = w * commit_size + window_size - 1
 
@@ -706,16 +871,20 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
             if _benchmarking:
                 step_time = time.time()
-            
-            # Extract detectors within window time range
-            window_detector_mask = (detector_times >= window_start) & (
-                detector_times <= window_end
+
+            # Get cached window structure or compute it
+            window_structure = self._get_or_create_window_structure(
+                window_size, commit_size, w
             )
-            
+            window_detector_mask = window_structure["window_detector_mask"]
+            H_window = window_structure["H_window_base"]
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["extract_detector_mask"].append(elapsed)
-                print(f"[Benchmarking] Window {w} - Extract detector mask: {elapsed:.6f}s")
+                print(
+                    f"[Benchmarking] Window {w} - Get window structure (cached): {elapsed:.6f}s"
+                )
                 step_time = time.time()
 
             if not np.any(window_detector_mask):
@@ -726,20 +895,19 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             # Extract detector outcomes for this window
             det_outcomes_window = detector_outcomes[window_detector_mask]
 
-            # Extract corresponding rows from H matrix
-            H_window: csc_matrix = self.H[window_detector_mask, :]
-            
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["extract_h_matrix_rows"].append(elapsed)
-                print(f"[Benchmarking] Window {w} - Extract H matrix rows: {elapsed:.6f}s")
+                print(
+                    f"[Benchmarking] Window {w} - Extract detector outcomes: {elapsed:.6f}s"
+                )
                 step_time = time.time()
 
             # Find columns (faults) that have at least one nonzero element
             # Exclude already-committed faults from this window
             fault_mask = np.asarray(H_window.sum(axis=0) > 0).ravel()
-            fault_mask = fault_mask & ~committed_faults_mask
-            
+            fault_mask = fault_mask & ~all_committed_faults_mask
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["find_active_faults"].append(elapsed)
@@ -755,11 +923,13 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             # Extract submatrices
             H_window = H_window[:, fault_mask]
             p_window = self.priors[fault_mask]
-            
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["extract_submatrices"].append(elapsed)
-                print(f"[Benchmarking] Window {w} - Extract submatrices: {elapsed:.6f}s")
+                print(
+                    f"[Benchmarking] Window {w} - Extract submatrices: {elapsed:.6f}s"
+                )
                 step_time = time.time()
 
             if verbose:
@@ -767,20 +937,17 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 print(f"Active faults: {fault_mask.sum()}")
                 print(f"Violated detectors: {det_outcomes_window.sum()}")
 
-            # Create new decoder for this window
-            window_decoder = SoftOutputsBpLsdDecoder(
-                H=H_window,
-                p=p_window,
-                obs_matrix=None,
-                **self._bplsd_kwargs,
-            )
-            
+            # Get cached decoder or create new one
+            window_decoder = self._get_or_create_window_decoder(H_window, p_window)
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["create_decoder"].append(elapsed)
-                print(f"[Benchmarking] Window {w} - Create decoder: {elapsed:.6f}s")
+                print(
+                    f"[Benchmarking] Window {w} - Get/create decoder (cached): {elapsed:.6f}s"
+                )
                 step_time = time.time()
-            
+
             # Decode window
             pred_window_small, _, _, soft_outputs_window = window_decoder.decode(
                 det_outcomes_window,
@@ -788,7 +955,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 compute_logical_gap_proxy=False,
                 verbose=False,
             )
-            
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["decode"].append(elapsed)
@@ -807,11 +974,13 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             window_clusters.append(clusters_window)
             window_cluster_sizes.append(soft_outputs_window["cluster_sizes"])
             window_cluster_llrs.append(soft_outputs_window["cluster_llrs"])
-            
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["convert_to_full_size"].append(elapsed)
-                print(f"[Benchmarking] Window {w} - Convert to full size: {elapsed:.6f}s")
+                print(
+                    f"[Benchmarking] Window {w} - Convert to full size: {elapsed:.6f}s"
+                )
                 step_time = time.time()
 
             # Determine which faults to commit
@@ -832,15 +1001,12 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 if np.any(commit_detector_mask):
                     # Find faults involved in commit region detectors
                     H_commit_rows = self.H[commit_detector_mask, :]
-                    commit_fault_mask = np.asarray(
-                        H_commit_rows.sum(axis=0) > 0
-                    ).ravel()
+                    commit_mask = np.asarray(H_commit_rows.sum(axis=0) > 0).ravel()
                     # Exclude already committed faults from commit region
-                    commit_fault_mask = commit_fault_mask & ~committed_faults_mask
+                    commit_mask &= ~all_committed_faults_mask
 
                     pred_to_commit = pred_window.copy()
-                    pred_to_commit[~commit_fault_mask] = False
-                    commit_mask = commit_fault_mask
+                    pred_to_commit[~commit_mask] = False
                 else:
                     pred_to_commit = np.zeros(self.H.shape[1], dtype=bool)
                     commit_mask = np.zeros(self.H.shape[1], dtype=bool)
@@ -848,7 +1014,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 if verbose:
                     print(f"Commit region: [{commit_start}, {commit_end}]")
                     print(f"Committing {pred_to_commit.sum()} faults")
-            
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["determine_commits"].append(elapsed)
@@ -861,31 +1027,33 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             committed_clusters_mask[committed_clusters_window > 0] = True
 
             # Update committed faults mask with all faults in commit region
-            committed_faults_mask |= commit_mask
-            
+            all_committed_faults_mask |= commit_mask
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["update_masks"].append(elapsed)
                 print(f"[Benchmarking] Window {w} - Update masks: {elapsed:.6f}s")
                 step_time = time.time()
-            
+
             # Update detector outcomes and prediction
             detector_update = ((pred_to_commit.astype(np.uint8) @ self.H.T) % 2).astype(
                 bool
             )
             detector_outcomes ^= detector_update
             pred ^= pred_to_commit
-            
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["update_detectors_prediction"].append(elapsed)
-                print(f"[Benchmarking] Window {w} - Update detectors/prediction: {elapsed:.6f}s")
+                print(
+                    f"[Benchmarking] Window {w} - Update detectors/prediction: {elapsed:.6f}s"
+                )
 
             if verbose:
                 print(f"Updated {detector_update.sum()} detector outcomes")
                 print(f"Total prediction weight: {pred.sum()}")
                 print(f"Remaining violated detectors: {detector_outcomes.sum()}")
-            
+
             if _benchmarking:
                 window_elapsed = time.time() - window_start_time
                 benchmark_times["window_total"].append(window_elapsed)
@@ -899,7 +1067,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         if _benchmarking:
             finalization_start = time.time()
-        
+
         # Convert committed clusters mask to cluster index array using label_clusters
         adj_matrix = (self.H.T @ self.H == 1).astype(bool)
         vertices_inside_clusters = np.where(committed_clusters_mask)[0]
@@ -919,9 +1087,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             "committed_cluster_sizes": committed_cluster_sizes,
             "committed_cluster_llrs": committed_cluster_llrs,
         }
-        
+
         if _benchmarking:
-            print(f"[Benchmarking] Finalization: {time.time() - finalization_start:.6f}s")
+            print(
+                f"[Benchmarking] Finalization: {time.time() - finalization_start:.6f}s"
+            )
 
         if verbose:
             print(f"\nSliding window decoding completed!")
@@ -932,32 +1102,35 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             )
             print(f"Committed cluster sizes: {committed_cluster_sizes}")
             print(f"Committed cluster LLRs: {committed_cluster_llrs}")
-        
+
         if _benchmarking:
             total_time = time.time() - start_time
             print(f"[Benchmarking] Total sliding window decode time: {total_time:.6f}s")
-            
+
             # Print aggregated benchmark summary
             print("\n[Benchmarking] ========== SUMMARY ACROSS ALL WINDOWS ==========")
             print(f"Total windows processed: {len(benchmark_times['window_total'])}")
             print("\nStep-by-step breakdown (mean ± std) [total]:\n")
-            
+
             for step_name, times in benchmark_times.items():
                 if times:  # Only show steps that were actually executed
                     times_array = np.array(times)
                     mean_time = np.mean(times_array)
                     std_time = np.std(times_array)
                     total_step_time = np.sum(times_array)
-                    print(f"  {step_name:<30}: {mean_time:.6f} ± {std_time:.6f}s [total: {total_step_time:.6f}s]")
-            
+                    print(
+                        f"  {step_name:<30}: {mean_time:.6f} ± {std_time:.6f}s [total: {total_step_time:.6f}s]"
+                    )
+
             print("\n[Benchmarking] ===============================================")
 
         return pred, soft_outputs
 
     def simulate_single(self, sliding_window=False, seed=None, **kwargs):
         rng = np.random.default_rng(seed)
-        errors = rng.random(self.H.shape[1], dtype="float64") < self.priors
+        errors = rng.random(self.H.shape[1], dtype=np.float64) < self.priors
         det_outcomes = (errors @ self.H.T % 2).astype(bool)
+
         if sliding_window:
             pred, soft_outputs = self.decode_sliding_window(det_outcomes, **kwargs)
         else:

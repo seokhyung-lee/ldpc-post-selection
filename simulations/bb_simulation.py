@@ -163,11 +163,11 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = np.arange(1e-3, 6.1e-3, 1e-3).round(4)
+    plist = np.arange(1e-3, 4.1e-3, 1e-3).round(4)
     nlist = [72, 144]  # [72, 108, 144, 288]
 
     shots_per_batch = round(1e7)
-    total_shots = round(1e7)
+    total_shots = round(1e8)
     compute_logical_gap_proxy = False
     include_cluster_stats = True
     n_jobs = 18

@@ -1,12 +1,14 @@
-import matplotlib
+import matplotlib.axes
+import matplotlib.lines
 import pandas as pd
-from typing import Union, List, Callable
+from typing import Union, List, Callable, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import re
 import glob
 from sklearn.metrics import roc_auc_score, average_precision_score
+from statsmodels.stats.proportion import proportion_confint
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data")
 
@@ -72,6 +74,7 @@ def error_band_plot(
         y + delta_y,
         alpha=alpha,
         color=color,
+        edgecolor=None,
     )
 
     return line
@@ -1078,3 +1081,13 @@ def get_required_abort_rate(
     }
 
     return results
+
+
+def get_confint(
+    counts: np.ndarray, shots: np.ndarray, alpha: float = 0.05, method: str = "wilson"
+) -> Tuple[np.ndarray, np.ndarray]:
+    p_lower, p_upper = proportion_confint(counts, shots, alpha=alpha, method=method)
+    p = (p_lower + p_upper) / 2
+    delta_p = p_upper - p
+
+    return p, delta_p
