@@ -209,9 +209,16 @@ def process_single_subdirectory(
 
         # Call aggregate_data for this specific subdirectory
         try:
+            # For sliding window metrics with norm_frac, we need to pass the full method name
+            # that includes the order suffix
+            if "norm_frac" in by and order is not None:
+                aggregation_by = method_name  # Use method_name which includes order suffix
+            else:
+                aggregation_by = by  # Use original by for non-sliding window metrics
+                
             df_agg, agg_reused = aggregate_data(
                 subdir_path,  # Process individual subdirectory
-                by=by,
+                by=aggregation_by,
                 norm_order=order,
                 decimals=decimals,
                 ascending_confidence=ascending_confidence,
@@ -327,7 +334,7 @@ def process_dataset(
             f"\nAggregating data for {by} with ascending_confidence={ascending_confidence}..."
         )
 
-        if "norm" in by:
+        if "norm" in by or "norm_frac" in by:
             assert orders is not None, "Norm-based methods require orders"
             norm_orders = orders
         else:

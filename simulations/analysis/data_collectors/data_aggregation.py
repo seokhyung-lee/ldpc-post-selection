@@ -1,4 +1,5 @@
 import os
+import pickle
 from typing import Tuple, List
 
 import numpy as np
@@ -15,6 +16,89 @@ from ..numpy_utils import (
     _calculate_histograms_bplsd_numba,
     _calculate_histograms_matching_numba,
 )
+
+
+def _calculate_sliding_window_norm_fractions(
+    cluster_data_list: List[List[np.ndarray]],
+    norm_order: float,
+    aggregation_type: str,
+) -> np.ndarray:
+    """
+    Calculate norm fractions for sliding window cluster data.
+
+    Parameters
+    ----------
+    cluster_data_list : list of list of numpy arrays
+        List where each element is a shot's window data (list of arrays per window).
+    norm_order : float
+        Order for L_p norm calculation.
+    aggregation_type : str
+        Type of aggregation: "mean", "max", or "committed".
+
+    Returns
+    -------
+    norm_fractions : 1D numpy array of float
+        Norm fractions for each shot.
+    """
+    num_shots = len(cluster_data_list)
+    norm_fractions = np.zeros(num_shots, dtype=float)
+
+    for shot_idx, shot_windows in enumerate(cluster_data_list):
+        if not shot_windows:  # Empty list
+            norm_fractions[shot_idx] = 0.0
+            continue
+
+        window_norm_fracs = []
+
+        if aggregation_type == "committed":
+            # Keep only the last window for this aggregation type
+            shot_windows = [shot_windows[-1]]
+
+        for window_data in shot_windows:
+            if len(window_data) == 0:
+                window_norm_fracs.append(0.0)
+                continue
+
+            # Calculate norm fraction for this window
+            # Assuming window_data[0] is outside region, window_data[1:] are inside clusters
+            total_sum = np.sum(window_data)
+            if total_sum == 0:
+                window_norm_fracs.append(0.0)
+                continue
+
+            inside_values = window_data[1:] if len(window_data) > 1 else np.array([])
+
+            if len(inside_values) == 0:
+                window_norm_fracs.append(0.0)
+            elif norm_order == np.inf:
+                norm_frac = (
+                    np.max(inside_values) / total_sum if len(inside_values) > 0 else 0.0
+                )
+            elif norm_order == 1:
+                norm_frac = np.sum(inside_values) / total_sum
+            elif norm_order == 2:
+                norm_frac = np.sqrt(np.sum(inside_values**2)) / total_sum
+            else:
+                norm_frac = (
+                    np.sum(inside_values**norm_order) ** (1 / norm_order) / total_sum
+                )
+
+            window_norm_fracs.append(float(norm_frac))
+
+        # Aggregate across windows based on aggregation_type
+        if not window_norm_fracs:
+            norm_fractions[shot_idx] = 0.0
+        elif aggregation_type == "mean":
+            norm_fractions[shot_idx] = np.mean(window_norm_fracs)
+        elif aggregation_type == "max":
+            norm_fractions[shot_idx] = np.max(window_norm_fracs)
+        elif aggregation_type == "committed":
+            # Use the last window's norm fraction
+            norm_fractions[shot_idx] = window_norm_fracs[-1]
+        else:
+            raise ValueError(f"Unknown aggregation_type: {aggregation_type}")
+
+    return norm_fractions
 
 
 def _get_values_for_binning_from_batch(
@@ -79,22 +163,42 @@ def _get_values_for_binning_from_batch(
     offsets_path = os.path.join(batch_dir_path, "offsets.npy")
     clusters_path = os.path.join(batch_dir_path, "clusters.npz")
 
-    # Check for scalars.feather first, as it's always needed.
+    # Sliding window format paths
+    fails_path = os.path.join(batch_dir_path, "fails.npy")
+    cluster_sizes_pkl_path = os.path.join(batch_dir_path, "cluster_sizes.pkl")
+    cluster_llrs_pkl_path = os.path.join(batch_dir_path, "cluster_llrs.pkl")
+    committed_cluster_sizes_pkl_path = os.path.join(
+        batch_dir_path, "committed_cluster_sizes.pkl"
+    )
+    committed_cluster_llrs_pkl_path = os.path.join(
+        batch_dir_path, "committed_cluster_llrs.pkl"
+    )
+
+    # Check for scalars.feather first, as it's always needed for regular format
+    # For sliding window format, we'll use fails.npy instead
+    use_sliding_window_format = False
+
     if not os.path.isfile(scalars_path):
-        if verbose:
-            print(
-                f"  Error: scalars.feather not found in {batch_dir_path}. Cannot process this batch."
+        # Check if this is sliding window format
+        if os.path.isfile(fails_path) and os.path.isfile(cluster_sizes_pkl_path):
+            use_sliding_window_format = True
+            if verbose:
+                print(f"  Using sliding window format for {batch_dir_path}")
+        else:
+            if verbose:
+                print(
+                    f"  Error: Neither scalars.feather nor sliding window format files found in {batch_dir_path}. Cannot process this batch."
+                )
+            # Raise FileNotFoundError directly as per new requirement
+            raise FileNotFoundError(
+                f"Neither scalars.feather nor sliding window format files found in {batch_dir_path}. Cannot process this batch."
             )
-        # Raise FileNotFoundError directly as per new requirement
-        raise FileNotFoundError(
-            f"scalars.feather not found in {batch_dir_path}. Cannot process this batch."
-        )
 
     # Check for cluster data availability
     use_legacy_format = False
     use_new_format = False
 
-    if "cluster" in by:
+    if "cluster" in by and not use_sliding_window_format:
         # Check legacy format first
         legacy_files_exist = all(
             os.path.isfile(fpath)
@@ -118,17 +222,33 @@ def _get_values_for_binning_from_batch(
 
     timing_info["file_check_time"] = time.perf_counter() - start_time
 
-    # Load scalars.feather
+    # Load data based on format
     start_scalars_load = time.perf_counter()
-    df_scalars = pd.read_feather(scalars_path)
-    original_batch_size = len(df_scalars)  # Store original size before any filtering
-    timing_info["scalars_load_time"] = time.perf_counter() - start_scalars_load
 
-    if df_scalars.empty:
+    if use_sliding_window_format:
+        # Load fails.npy for sliding window format
+        fails = np.load(fails_path)
+        original_batch_size = len(fails)
+
+        # Create minimal df_scalars with fail column
+        df_scalars = pd.DataFrame({"fail": fails})
+
         if verbose:
-            print(f"  Warning: scalars.feather in {batch_dir_path} is empty.")
-        # Still return the empty df_scalars as it exists, the caller can decide to skip.
-        # The series_to_bin will likely be empty or None.
+            print(f"  Loaded {len(fails)} samples from sliding window format")
+    else:
+        # Load regular scalars.feather
+        df_scalars = pd.read_feather(scalars_path)
+        original_batch_size = len(
+            df_scalars
+        )  # Store original size before any filtering
+
+        if df_scalars.empty:
+            if verbose:
+                print(f"  Warning: scalars.feather in {batch_dir_path} is empty.")
+            # Still return the empty df_scalars as it exists, the caller can decide to skip.
+            # The series_to_bin will likely be empty or None.
+
+    timing_info["scalars_load_time"] = time.perf_counter() - start_scalars_load
 
     # Filter samples based on sample_indices if provided
     start_filtering = time.perf_counter()
@@ -168,7 +288,79 @@ def _get_values_for_binning_from_batch(
         inside_cluster_llr_norms = np.full(num_samples, np.nan, dtype=float)
         cluster_metrics = np.full(num_samples, np.nan, dtype=float)
 
-        if use_legacy_format:
+        if use_sliding_window_format:
+            # Sliding window format: load pickled lists
+            start_file_load = time.perf_counter()
+
+            # Parse the aggregation type from the 'by' parameter
+            # Expected format: {aggregation_type}_cluster_{size/llr}_norm_frac_{order}
+            if "_cluster_" in by and "_norm_frac_" in by:
+                parts = by.split("_cluster_")
+                aggregation_type = parts[0]  # mean, max, or committed
+
+                remaining = parts[1].split("_norm_frac_")
+                value_type = remaining[0]  # size or llr
+
+                # Load appropriate cluster data
+                if value_type == "size":
+                    if aggregation_type == "committed":
+                        with open(committed_cluster_sizes_pkl_path, "rb") as f:
+                            cluster_data_list = pickle.load(f)
+                    else:
+                        with open(cluster_sizes_pkl_path, "rb") as f:
+                            cluster_data_list = pickle.load(f)
+                elif value_type == "llr":
+                    if aggregation_type == "committed":
+                        with open(committed_cluster_llrs_pkl_path, "rb") as f:
+                            cluster_data_list = pickle.load(f)
+                    else:
+                        with open(cluster_llrs_pkl_path, "rb") as f:
+                            cluster_data_list = pickle.load(f)
+                else:
+                    raise ValueError(
+                        f"Unknown value type in sliding window metric: {value_type}"
+                    )
+
+                cluster_files_load_time = time.perf_counter() - start_file_load
+                timing_info["cluster_file_load_time"] = cluster_files_load_time
+
+                # Filter samples if needed
+                if sample_indices is not None:
+                    filtered_cluster_data = []
+                    batch_end_idx = batch_start_idx + original_batch_size
+                    mask = (sample_indices >= batch_start_idx) & (
+                        sample_indices < batch_end_idx
+                    )
+                    batch_sample_indices = sample_indices[mask]
+                    local_indices = batch_sample_indices - batch_start_idx
+
+                    for idx in local_indices:
+                        if idx < len(cluster_data_list):
+                            filtered_cluster_data.append(cluster_data_list[idx])
+
+                    cluster_data_list = filtered_cluster_data
+
+                # Calculate norm fractions
+                start_calc = time.perf_counter()
+                norm_fractions = _calculate_sliding_window_norm_fractions(
+                    cluster_data_list=cluster_data_list,
+                    norm_order=norm_order,
+                    aggregation_type=aggregation_type,
+                    value_type=value_type,
+                )
+                timing_info["cluster_calculation_time"] = (
+                    time.perf_counter() - start_calc
+                )
+
+                # Store results based on metric type
+                if value_type == "size":
+                    inside_cluster_size_norms = norm_fractions
+                else:
+                    inside_cluster_llr_norms = norm_fractions
+            else:
+                raise ValueError(f"Unsupported sliding window metric format: {by}")
+
+        elif use_legacy_format:
             # Legacy format: load flat arrays and offsets
             offsets = np.load(offsets_path, allow_pickle=False)[:-1]
 
@@ -419,7 +611,23 @@ def _get_values_for_binning_from_batch(
         )
 
         start_series_creation = time.perf_counter()
-        if by == "cluster_size_norm":
+
+        # Handle sliding window metrics
+        if use_sliding_window_format and "_cluster_" in by and "_norm_frac_" in by:
+            # For sliding window format, we've already calculated the norm fractions
+            parts = by.split("_cluster_")
+            remaining = parts[1].split("_norm_frac_")
+            value_type = remaining[0]  # size or llr
+
+            if value_type == "size":
+                series_to_bin = pd.Series(
+                    inside_cluster_size_norms, index=df_scalars.index
+                )
+            else:  # llr
+                series_to_bin = pd.Series(
+                    inside_cluster_llr_norms, index=df_scalars.index
+                )
+        elif by == "cluster_size_norm":
             series_to_bin = pd.Series(inside_cluster_size_norms, index=df_scalars.index)
         elif by == "cluster_llr_norm":
             series_to_bin = pd.Series(inside_cluster_llr_norms, index=df_scalars.index)

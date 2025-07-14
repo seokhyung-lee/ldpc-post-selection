@@ -132,23 +132,27 @@ def simulate(
         fp_fails = os.path.join(batch_output_dir, "fails.npy")
         fp_cluster_sizes = os.path.join(batch_output_dir, "cluster_sizes.pkl")
         fp_cluster_llrs = os.path.join(batch_output_dir, "cluster_llrs.pkl")
-        fp_committed_cluster_sizes = os.path.join(batch_output_dir, "committed_cluster_sizes.pkl")
-        fp_committed_cluster_llrs = os.path.join(batch_output_dir, "committed_cluster_llrs.pkl")
+        fp_committed_cluster_sizes = os.path.join(
+            batch_output_dir, "committed_cluster_sizes.pkl"
+        )
+        fp_committed_cluster_llrs = os.path.join(
+            batch_output_dir, "committed_cluster_llrs.pkl"
+        )
 
         # Save results
         os.makedirs(batch_output_dir, exist_ok=True)
-        
+
         # Save fails as numpy array
         np.save(fp_fails, fails)
-        
+
         # Save cluster statistics as pickled files
-        with open(fp_cluster_sizes, 'wb') as f:
+        with open(fp_cluster_sizes, "wb") as f:
             pickle.dump(cluster_sizes, f)
-        with open(fp_cluster_llrs, 'wb') as f:
+        with open(fp_cluster_llrs, "wb") as f:
             pickle.dump(cluster_llrs, f)
-        with open(fp_committed_cluster_sizes, 'wb') as f:
+        with open(fp_committed_cluster_sizes, "wb") as f:
             pickle.dump(committed_cluster_sizes, f)
-        with open(fp_committed_cluster_llrs, 'wb') as f:
+        with open(fp_committed_cluster_llrs, "wb") as f:
             pickle.dump(committed_cluster_llrs, f)
 
         current_simulated_for_config += to_run
@@ -169,15 +173,15 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = np.arange(1e-3, 4.1e-3, 1e-3).round(4)
-    nlist = [72, 144]  # [72, 108, 144, 288]
+    plist = [5e-3]
+    nlist = [144]  # [72, 108, 144, 288]
 
     # Sliding window parameters
-    window_size = 10
-    commit_size = 5
+    window_size = 3
+    commit_size = 1
 
-    shots_per_batch = round(1e6)  # 1M shots per batch
-    total_shots = round(1e7)  # 10M total shots
+    shots_per_batch = round(1e6)
+    total_shots = round(1e7)
     n_jobs = 18
     repeat = 10
     dir_name = "bb_sliding_window_minsum_iter30_lsd0"
@@ -202,23 +206,15 @@ if __name__ == "__main__":
     print(f"\n==== Starting sliding window simulations up to {total_shots} shots ====")
     for n in nlist:
         T = get_BB_distance(n)
-        # Ensure window_size doesn't exceed T
-        effective_window_size = min(window_size, T)
-        effective_commit_size = min(commit_size, effective_window_size - 1)
-        
-        if effective_window_size != window_size or effective_commit_size != commit_size:
-            print(f"\nAdjusting window parameters for n={n}, T={T}:")
-            print(f"  window_size: {window_size} -> {effective_window_size}")
-            print(f"  commit_size: {commit_size} -> {effective_commit_size}")
-        
+
         for i_p, p in enumerate(plist):
             simulate(
                 shots=total_shots,
                 p=p,
                 n=n,
                 T=T,
-                window_size=effective_window_size,
-                commit_size=effective_commit_size,
+                window_size=window_size,
+                commit_size=commit_size,
                 data_dir=data_dir,
                 n_jobs=n_jobs,
                 repeat=repeat,
