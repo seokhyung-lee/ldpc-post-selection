@@ -109,6 +109,61 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         # Precompute adjacency matrix for efficient cluster labeling
         self._adjacency_matrix = (self.H.T @ self.H == 1).astype(bool)
 
+    @staticmethod
+    def _compute_norm_fractions(
+        values: np.ndarray, orders: List[float]
+    ) -> Dict[float, float]:
+        """
+        Compute norm fractions for given values and orders.
+
+        Parameters
+        ----------
+        values : 1D numpy array of float
+            Values to compute norm fractions for (e.g., cluster sizes or LLRs).
+            values[0] is assumed to be the outside region and is excluded.
+        orders : list of float
+            Orders for norm computation (can include np.inf).
+
+        Returns
+        -------
+        norm_fractions : dict
+            Dictionary mapping order to norm fraction value.
+        """
+        norm_fractions = {}
+
+        # Get values excluding the outside region (index 0)
+        inside_values = values[1:] if len(values) > 1 else np.array([])
+        total_sum = np.sum(values)
+
+        if len(inside_values) == 0 or total_sum == 0:
+            # No clusters or zero sum, return 0 for all orders
+            for order in orders:
+                norm_fractions[order] = 0.0
+        else:
+            for order in orders:
+                if order == np.inf:
+                    # Max norm
+                    norm_frac = (
+                        np.max(inside_values) / total_sum
+                        if len(inside_values) > 0
+                        else 0.0
+                    )
+                elif order == 0.5:
+                    # L0.5 norm (special case for efficiency)
+                    norm_frac = np.sum(np.sqrt(inside_values)) ** 2 / total_sum
+                elif order == 1:
+                    # L1 norm (special case for efficiency)
+                    norm_frac = np.sum(inside_values) / total_sum
+                elif order == 2:
+                    # L2 norm (special case for efficiency)
+                    norm_frac = np.sqrt(np.sum(inside_values**2)) / total_sum
+                else:
+                    # General Lp norm
+                    norm_frac = np.sum(inside_values**order) ** (1 / order) / total_sum
+                norm_fractions[order] = float(norm_frac)
+
+        return norm_fractions
+
     @property
     def detector_time_coords(self) -> np.ndarray:
         if self._detector_time_coords is not None:
@@ -551,6 +606,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         include_cluster_stats: bool = True,
         compute_logical_gap_proxy: bool = False,
         explore_only_nearby_logical_classes: bool = True,
+        norm_frac_orders: Optional[List[float]] = None,
         verbose: bool = False,
         _benchmarking: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray, bool, Dict[str, Any]]:
@@ -571,6 +627,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             If True, only explore adjacent logical classes for gap proxy computation.
             If False, explore all possible logical classes. Only used when
             compute_logical_gap_proxy is True. Defaults to True.
+        norm_frac_orders : list of float, optional
+            Orders for computing norm fractions of cluster sizes and LLRs.
+            Can include positive numbers and np.inf. If provided, norm fractions
+            are computed and stored in soft_outputs. Defaults to None.
         verbose : bool, optional
             If True, print progress information. Defaults to False.
         _benchmarking : bool
@@ -595,6 +655,8 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             - cluster_llrs (1D numpy array of float): LLRs of clusters and the remaining
             region (cluster_llrs[-1])
             - gap_proxy (float): Logical gap proxy (only if compute_logical_gap_proxy=True)
+            - cluster_size_norm_frac_{order} (float): Norm fraction of cluster sizes for each order
+            - cluster_llr_norm_frac_{order} (float): Norm fraction of cluster LLRs for each order
         """
         if verbose:
             print("Starting BP+LSD decoding...")
@@ -716,6 +778,35 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 print(
                     f"[Benchmarking] Store cluster outputs: {time.time() - cluster_start:.6f}s"
                 )
+
+            # Compute norm fractions if requested
+            if norm_frac_orders is not None:
+                if _benchmarking:
+                    norm_frac_start = time.time()
+
+                # Compute norm fractions for cluster sizes
+                size_norm_fracs = self._compute_norm_fractions(
+                    cluster_sizes, norm_frac_orders
+                )
+                for order, norm_frac in size_norm_fracs.items():
+                    soft_outputs[f"cluster_size_norm_frac_{order}"] = norm_frac
+
+                # Compute norm fractions for cluster LLRs
+                llr_norm_fracs = self._compute_norm_fractions(
+                    cluster_llrs, norm_frac_orders
+                )
+                for order, norm_frac in llr_norm_fracs.items():
+                    soft_outputs[f"cluster_llr_norm_frac_{order}"] = norm_frac
+
+                if _benchmarking:
+                    print(
+                        f"[Benchmarking] Compute norm fractions: {time.time() - norm_frac_start:.6f}s"
+                    )
+
+                if verbose:
+                    print(f"Computed norm fractions for orders: {norm_frac_orders}")
+
+            if _benchmarking:
                 step_start = time.time()
 
             if verbose:
@@ -773,6 +864,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         detector_outcomes: np.ndarray | List[bool | int],
         window_size: int,
         commit_size: int,
+        norm_frac_orders: Optional[List[float]] = None,
         verbose: bool = False,
         _benchmarking: bool = False,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -787,6 +879,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             Number of rounds in each window.
         commit_size : int
             Number of rounds for each commitment.
+        norm_frac_orders : list of float, optional
+            Orders for computing norm fractions of cluster sizes and LLRs.
+            Can include positive numbers and np.inf. If provided, norm fractions
+            are computed for each window and stored in soft_outputs. Defaults to None.
         verbose : bool, optional
             If True, print progress information. Defaults to False.
         _benchmarking : bool
@@ -805,6 +901,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             - committed_clusters: list of cluster assignments (restricted to committed region so far) after each window (last element is final committed clusters)
             - committed_cluster_sizes: list of cluster sizes (restricted to committed region so far) after each window
             - committed_cluster_llrs: list of cluster LLRs (restricted to committed region so far) after each window
+            - cluster_size_norm_frac_{order}: list of norm fractions of cluster sizes for each window
+            - cluster_llr_norm_frac_{order}: list of norm fractions of cluster LLRs for each window
+            - committed_cluster_size_norm_frac_{order}: list of norm fractions of committed cluster sizes after each window
+            - committed_cluster_llr_norm_frac_{order}: list of norm fractions of committed cluster LLRs after each window
         """
         if window_size <= commit_size:
             raise ValueError("W must be greater than F")
@@ -854,6 +954,27 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         window_committed_clusters = []
         window_committed_cluster_sizes = []
         window_committed_cluster_llrs = []
+
+        # Storage for norm fractions if requested
+        if norm_frac_orders is not None:
+            window_norm_fracs = {
+                f"cluster_size_norm_frac_{order}": [] for order in norm_frac_orders
+            }
+            window_norm_fracs.update(
+                {f"cluster_llr_norm_frac_{order}": [] for order in norm_frac_orders}
+            )
+            window_norm_fracs.update(
+                {
+                    f"committed_cluster_size_norm_frac_{order}": []
+                    for order in norm_frac_orders
+                }
+            )
+            window_norm_fracs.update(
+                {
+                    f"committed_cluster_llr_norm_frac_{order}": []
+                    for order in norm_frac_orders
+                }
+            )
 
         if _benchmarking:
             print(f"[Benchmarking] Initialization: {time.time() - step_start:.6f}s")
@@ -983,6 +1104,26 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             window_cluster_sizes.append(soft_outputs_window["cluster_sizes"])
             window_cluster_llrs.append(soft_outputs_window["cluster_llrs"])
 
+            # Compute norm fractions for window clusters if requested
+            if norm_frac_orders is not None:
+                # Norm fractions for window cluster sizes
+                size_norm_fracs = self._compute_norm_fractions(
+                    soft_outputs_window["cluster_sizes"], norm_frac_orders
+                )
+                for order, norm_frac in size_norm_fracs.items():
+                    window_norm_fracs[f"cluster_size_norm_frac_{order}"].append(
+                        norm_frac
+                    )
+
+                # Norm fractions for window cluster LLRs
+                llr_norm_fracs = self._compute_norm_fractions(
+                    soft_outputs_window["cluster_llrs"], norm_frac_orders
+                )
+                for order, norm_frac in llr_norm_fracs.items():
+                    window_norm_fracs[f"cluster_llr_norm_frac_{order}"].append(
+                        norm_frac
+                    )
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["convert_to_full_size"].append(elapsed)
@@ -1061,6 +1202,36 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             window_committed_cluster_sizes.append(committed_cluster_sizes)
             window_committed_cluster_llrs.append(committed_cluster_llrs)
 
+            # Compute norm fractions for committed clusters if requested
+            if norm_frac_orders is not None:
+                # Norm fractions for committed cluster sizes
+                if len(committed_cluster_sizes) > 0:
+                    size_norm_fracs = self._compute_norm_fractions(
+                        committed_cluster_sizes, norm_frac_orders
+                    )
+                    for order, norm_frac in size_norm_fracs.items():
+                        window_norm_fracs[
+                            f"committed_cluster_size_norm_frac_{order}"
+                        ].append(norm_frac)
+
+                    # Norm fractions for committed cluster LLRs
+                    llr_norm_fracs = self._compute_norm_fractions(
+                        committed_cluster_llrs, norm_frac_orders
+                    )
+                    for order, norm_frac in llr_norm_fracs.items():
+                        window_norm_fracs[
+                            f"committed_cluster_llr_norm_frac_{order}"
+                        ].append(norm_frac)
+                else:
+                    # No committed clusters yet, append 0.0 for all orders
+                    for order in norm_frac_orders:
+                        window_norm_fracs[
+                            f"committed_cluster_size_norm_frac_{order}"
+                        ].append(0.0)
+                        window_norm_fracs[
+                            f"committed_cluster_llr_norm_frac_{order}"
+                        ].append(0.0)
+
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["update_masks"].append(elapsed)
@@ -1106,6 +1277,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             "committed_cluster_sizes": window_committed_cluster_sizes,
             "committed_cluster_llrs": window_committed_cluster_llrs,
         }
+
+        # Add norm fractions to soft outputs if computed
+        if norm_frac_orders is not None:
+            soft_outputs.update(window_norm_fracs)
 
         if verbose:
             print(f"\nSliding window decoding completed!")
