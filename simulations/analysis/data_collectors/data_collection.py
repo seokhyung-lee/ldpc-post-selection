@@ -212,10 +212,12 @@ def process_single_subdirectory(
             # For sliding window metrics with norm_frac, we need to pass the full method name
             # that includes the order suffix
             if "norm_frac" in by and order is not None:
-                aggregation_by = method_name  # Use method_name which includes order suffix
+                aggregation_by = (
+                    method_name  # Use method_name which includes order suffix
+                )
             else:
                 aggregation_by = by  # Use original by for non-sliding window metrics
-                
+
             df_agg, agg_reused = aggregate_data(
                 subdir_path,  # Process individual subdirectory
                 by=aggregation_by,
@@ -278,11 +280,11 @@ def process_single_subdirectory(
         }
 
 
-def determine_decimals(by: str) -> int:
-    if by == "detector_density":
-        return 4
-    else:
-        return 2
+# def determine_decimals(by: str) -> int:
+#     if by == "detector_density" or "norm_frac" in by:
+#         return 4
+#     else:
+#         return 2
 
 
 def process_dataset(
@@ -290,9 +292,9 @@ def process_dataset(
     dataset_name: str,
     ascending_confidences: Dict[str, bool],
     orders: Optional[List[float]] = None,
+    decimals: int = 2,
     verbose: bool = False,
     dataset_type: Optional[str] = None,
-    n_jobs: int = -1,
 ) -> None:
     """
     Process a dataset with given parameters.
@@ -310,15 +312,12 @@ def process_dataset(
         List of norm orders to use for norm-based methods.
         If None, defaults to [0.5, 1, 2, np.inf]. Only used for norm-based methods.
     decimals : int, optional
-        Number of decimal places to round to. Defaults to 3.
+        Number of decimal places to round to. Defaults to 2.
     verbose : bool, optional
         Whether to print detailed progress information. Defaults to False.
     dataset_type : Optional[str], optional
         Type of dataset ('surface', 'bb', 'hgp'). If None, inferred from dataset_name.
         This determines how directory structure is interpreted.
-    n_jobs : int, optional
-        Number of parallel jobs for processing subdirectories.
-        Use -1 to use all available cores. Defaults to -1.
     """
     # Infer dataset_type from dataset_name if not provided
     if dataset_type is None:
@@ -329,7 +328,6 @@ def process_dataset(
 
     # Set default orders if not provided
     for by, ascending_confidence in ascending_confidences.items():
-        decimals = determine_decimals(by)
         print(
             f"\nAggregating data for {by} with ascending_confidence={ascending_confidence}..."
         )

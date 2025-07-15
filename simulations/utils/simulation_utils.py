@@ -419,40 +419,39 @@ def bplsd_sliding_window_simulation_task_single(
     """
     if decoder_prms is None:
         decoder_prms = {}
-    
+
     # Create decoder
     decoder = SoftOutputsBpLsdDecoder(
         circuit=circuit,
         **decoder_prms,
     )
-    
+
     fails_list = []
     cluster_sizes_list = []
     cluster_llrs_list = []
     committed_cluster_sizes_list = []
     committed_cluster_llrs_list = []
-    
-    for shot_idx in range(shots):
+
+    for _ in range(shots):
         # Use simulate_single with sliding window
         fail, soft_outputs = decoder.simulate_single(
             sliding_window=True,
-            seed=shot_idx,  # Use shot index as seed for reproducibility
             window_size=window_size,
             commit_size=commit_size,
         )
-        
+
         fails_list.append(fail)
-        
+
         # Extract all window cluster data
         cluster_sizes_list.append(soft_outputs["cluster_sizes"])
         cluster_llrs_list.append(soft_outputs["cluster_llrs"])
-        
+
         # Extract all committed cluster data
         committed_cluster_sizes_list.append(soft_outputs["committed_cluster_sizes"])
         committed_cluster_llrs_list.append(soft_outputs["committed_cluster_llrs"])
-    
+
     fails_arr = np.array(fails_list)
-    
+
     return (
         fails_arr,
         cluster_sizes_list,
@@ -512,13 +511,13 @@ def bplsd_sliding_window_simulation_task_parallel(
     """
     if shots == 0:
         raise ValueError("Total number of shots to simulate must be greater than 0.")
-    
+
     # Make a copy to avoid modifying the original
     decoder_prms_copy = decoder_prms.copy() if decoder_prms else {}
-    
+
     # Divide shots among jobs
     chunk_sizes = _calculate_chunk_sizes(shots, n_jobs, repeat)
-    
+
     # Execute tasks in parallel
     results = Parallel(n_jobs=n_jobs)(
         delayed(bplsd_sliding_window_simulation_task_single)(
@@ -530,7 +529,7 @@ def bplsd_sliding_window_simulation_task_parallel(
         )
         for chunk in chunk_sizes
     )
-    
+
     # Unpack and combine results
     (
         fails_l,
@@ -539,16 +538,20 @@ def bplsd_sliding_window_simulation_task_parallel(
         committed_cluster_sizes_l,
         committed_cluster_llrs_l,
     ) = zip(*results)
-    
+
     # Combine fails into single array
     fails = np.concatenate(fails_l)
-    
+
     # Flatten lists of cluster data (list of lists structure)
     cluster_sizes = [item for sublist in cluster_sizes_l for item in sublist]
     cluster_llrs = [item for sublist in cluster_llrs_l for item in sublist]
-    committed_cluster_sizes = [item for sublist in committed_cluster_sizes_l for item in sublist]
-    committed_cluster_llrs = [item for sublist in committed_cluster_llrs_l for item in sublist]
-    
+    committed_cluster_sizes = [
+        item for sublist in committed_cluster_sizes_l for item in sublist
+    ]
+    committed_cluster_llrs = [
+        item for sublist in committed_cluster_llrs_l for item in sublist
+    ]
+
     return (
         fails,
         cluster_sizes,

@@ -1320,8 +1320,12 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         return pred, soft_outputs
 
     def simulate_single(self, sliding_window=False, seed=None, **kwargs):
-        rng = np.random.default_rng(seed)
-        errors = rng.random(self.H.shape[1], dtype=np.float64) < self.priors
+        if seed is not None:
+            rng = np.random.default_rng(seed)
+            errors = rng.random(self.H.shape[1], dtype=np.float64) < self.priors
+        else:
+            errors = np.random.random(self.H.shape[1]) < self.priors
+
         det_outcomes = (errors @ self.H.T % 2).astype(bool)
 
         if sliding_window:

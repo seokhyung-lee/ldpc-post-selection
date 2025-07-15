@@ -11,11 +11,11 @@ if __name__ == "__main__":
     # Define sliding window specific metrics
     # Format: {aggregation_type}_cluster_{size/llr}_norm_frac_{order}
     ascending_confidences = {}
-    
+
     # Define aggregation types and their confidence directions
     aggregation_types = ["mean", "max", "committed"]
-    value_types = ["size", "llr"]
-    
+    value_types = ["llr"]
+
     # For cluster metrics, higher values typically mean lower confidence
     for agg_type in aggregation_types:
         for value_type in value_types:
@@ -39,6 +39,7 @@ if __name__ == "__main__":
         dataset_type="bb",  # Use same type as regular BB codes
         ascending_confidences=ascending_confidences,
         orders=orders,
+        decimals=4,
         verbose=False,
     )
 
