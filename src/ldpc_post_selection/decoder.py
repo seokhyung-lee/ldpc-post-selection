@@ -3,7 +3,7 @@
 from .base import SoftOutputsDecoder
 from .bplsd_decoder import SoftOutputsBpLsdDecoder
 from .matching_decoder import SoftOutputsMatchingDecoder
-from .utils import compute_cluster_stats
+from .cluster_tools import compute_cluster_stats
 
 # Export all classes
 __all__ = [

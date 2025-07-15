@@ -14,7 +14,7 @@ if __name__ == "__main__":
 
     # Define aggregation types and their confidence directions
     aggregation_types = ["mean", "max", "committed"]
-    value_types = ["llr"]
+    value_types = ["size", "llr"]
 
     # For cluster metrics, higher values typically mean lower confidence
     for agg_type in aggregation_types:
@@ -23,7 +23,7 @@ if __name__ == "__main__":
             ascending_confidences[metric_base] = False
 
     # Define norm orders to calculate
-    orders = [2]  # Can be extended to [0.5, 1, 2, np.inf]
+    orders = [1, 2, np.inf]  # Can be extended to [0.5, 1, 2, np.inf]
 
     # Data directory configuration
     data_dir_name = "bb_sliding_window_minsum_iter30_lsd0"

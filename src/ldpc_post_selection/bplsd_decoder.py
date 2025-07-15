@@ -10,7 +10,7 @@ from ldpc.bplsd_decoder import BpLsdDecoder
 from scipy.sparse import csc_matrix, vstack
 
 from .base import SoftOutputsDecoder
-from .utils import compute_cluster_stats, label_clusters
+from .cluster_tools import compute_cluster_stats, label_clusters
 
 
 class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
@@ -945,15 +945,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         # Storage for aggregated soft outputs
         window_clusters = []
-        window_cluster_sizes = []
-        window_cluster_llrs = []
-        committed_clusters_mask = np.zeros(self.H.shape[1], dtype=bool)
-        all_committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
 
         # Storage for window-wise committed clusters
         window_committed_clusters = []
-        window_committed_cluster_sizes = []
-        window_committed_cluster_llrs = []
+
+        all_committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
 
         # Storage for norm fractions if requested
         if norm_frac_orders is not None:
@@ -1101,8 +1097,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
             # Store window soft outputs
             window_clusters.append(clusters_window)
-            window_cluster_sizes.append(soft_outputs_window["cluster_sizes"])
-            window_cluster_llrs.append(soft_outputs_window["cluster_llrs"])
 
             # Compute norm fractions for window clusters if requested
             if norm_frac_orders is not None:
@@ -1170,67 +1164,16 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 print(f"[Benchmarking] Window {w} - Determine commits: {elapsed:.6f}s")
                 step_time = time.time()
 
-            # Update committed clusters mask
-            committed_clusters_window = clusters_window.copy()
-            committed_clusters_window[~commit_mask] = 0
-            committed_clusters_mask[committed_clusters_window > 0] = True
-
             # Update committed faults mask with all faults in commit region
             all_committed_faults_mask |= commit_mask
 
-            # Compute committed clusters for this window
-            vertices_inside_clusters_window = np.where(committed_clusters_mask)[0]
-            if len(vertices_inside_clusters_window) > 0:
-                # Ensure adjacency matrix is computed
-                adj_matrix = self._adjacency_matrix
-                committed_clusters = label_clusters(
-                    adj_matrix, vertices_inside_clusters_window
-                )
-                # Compute statistics only within committed region
-                committed_mask = all_committed_faults_mask
-                committed_cluster_sizes, committed_cluster_llrs = compute_cluster_stats(
-                    committed_clusters[committed_mask], self.bit_llrs[committed_mask]
-                )
-            else:
-                # No committed clusters yet
-                committed_clusters = np.zeros(self.H.shape[1], dtype=int)
-                committed_cluster_sizes = np.array([], dtype=int)
-                committed_cluster_llrs = np.array([], dtype=float)
+            # Update committed clusters mask
+            committed_clusters_current_window = clusters_window.copy()
+            committed_clusters_current_window[~commit_mask] = 0
+            committed_clusters_current_window = committed_clusters_current_window > 0
 
             # Store window-wise committed clusters
-            window_committed_clusters.append(committed_clusters)
-            window_committed_cluster_sizes.append(committed_cluster_sizes)
-            window_committed_cluster_llrs.append(committed_cluster_llrs)
-
-            # Compute norm fractions for committed clusters if requested
-            if norm_frac_orders is not None:
-                # Norm fractions for committed cluster sizes
-                if len(committed_cluster_sizes) > 0:
-                    size_norm_fracs = self._compute_norm_fractions(
-                        committed_cluster_sizes, norm_frac_orders
-                    )
-                    for order, norm_frac in size_norm_fracs.items():
-                        window_norm_fracs[
-                            f"committed_cluster_size_norm_frac_{order}"
-                        ].append(norm_frac)
-
-                    # Norm fractions for committed cluster LLRs
-                    llr_norm_fracs = self._compute_norm_fractions(
-                        committed_cluster_llrs, norm_frac_orders
-                    )
-                    for order, norm_frac in llr_norm_fracs.items():
-                        window_norm_fracs[
-                            f"committed_cluster_llr_norm_frac_{order}"
-                        ].append(norm_frac)
-                else:
-                    # No committed clusters yet, append 0.0 for all orders
-                    for order in norm_frac_orders:
-                        window_norm_fracs[
-                            f"committed_cluster_size_norm_frac_{order}"
-                        ].append(0.0)
-                        window_norm_fracs[
-                            f"committed_cluster_llr_norm_frac_{order}"
-                        ].append(0.0)
+            window_committed_clusters.append(committed_clusters_current_window)
 
             if _benchmarking:
                 elapsed = time.time() - step_time
@@ -1270,12 +1213,8 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         # Create aggregated soft outputs
         soft_outputs = {
-            "clusters": window_clusters,
-            "cluster_sizes": window_cluster_sizes,
-            "cluster_llrs": window_cluster_llrs,
+            "all_clusters": window_clusters,
             "committed_clusters": window_committed_clusters,
-            "committed_cluster_sizes": window_committed_cluster_sizes,
-            "committed_cluster_llrs": window_committed_cluster_llrs,
         }
 
         # Add norm fractions to soft outputs if computed
@@ -1286,15 +1225,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             print(f"\nSliding window decoding completed!")
             print(f"Total windows processed: {len(window_clusters)}")
             print(f"Final prediction weight: {pred.sum()}")
-            if window_committed_clusters:
-                final_committed_clusters = window_committed_clusters[-1]
-                final_committed_sizes = window_committed_cluster_sizes[-1]
-                final_committed_llrs = window_committed_cluster_llrs[-1]
-                print(
-                    f"Committed clusters: {(final_committed_clusters > 0).sum()} faults in {final_committed_clusters.max()} clusters"
-                )
-                print(f"Committed cluster sizes: {final_committed_sizes}")
-                print(f"Committed cluster LLRs: {final_committed_llrs}")
 
         if _benchmarking:
             total_time = time.time() - start_time
