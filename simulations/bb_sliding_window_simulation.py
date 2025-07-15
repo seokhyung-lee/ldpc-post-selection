@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 import numpy as np
+from scipy import sparse
 
 from ldpc_post_selection.decoder import SoftOutputsBpLsdDecoder
 from simulations.utils.simulation_utils import (
@@ -29,7 +30,7 @@ def simulate(
 ) -> None:
     """
     Run sliding window simulation for a given (p, n, T) configuration, saving results in batches.
-    Results include numpy array for fails and pickled files for cluster statistics.
+    Results include numpy array for fails and CSR sparse matrices for cluster information.
 
     Parameters
     ----------
@@ -114,10 +115,8 @@ def simulate(
         # Run sliding window simulation
         (
             fails,
-            cluster_sizes,
-            cluster_llrs,
-            committed_cluster_sizes,
-            committed_cluster_llrs,
+            all_clusters_csr,
+            committed_clusters_csr,
         ) = bplsd_sliding_window_simulation_task_parallel(
             shots=to_run,
             circuit=circuit,
@@ -130,14 +129,8 @@ def simulate(
 
         # Prepare filenames for this batch
         fp_fails = os.path.join(batch_output_dir, "fails.npy")
-        fp_cluster_sizes = os.path.join(batch_output_dir, "cluster_sizes.pkl")
-        fp_cluster_llrs = os.path.join(batch_output_dir, "cluster_llrs.pkl")
-        fp_committed_cluster_sizes = os.path.join(
-            batch_output_dir, "committed_cluster_sizes.pkl"
-        )
-        fp_committed_cluster_llrs = os.path.join(
-            batch_output_dir, "committed_cluster_llrs.pkl"
-        )
+        fp_all_clusters = os.path.join(batch_output_dir, "all_clusters.npz")
+        fp_committed_clusters = os.path.join(batch_output_dir, "committed_clusters.npz")
 
         # Save results
         os.makedirs(batch_output_dir, exist_ok=True)
@@ -145,15 +138,9 @@ def simulate(
         # Save fails as numpy array
         np.save(fp_fails, fails)
 
-        # Save cluster statistics as pickled files
-        with open(fp_cluster_sizes, "wb") as f:
-            pickle.dump(cluster_sizes, f)
-        with open(fp_cluster_llrs, "wb") as f:
-            pickle.dump(cluster_llrs, f)
-        with open(fp_committed_cluster_sizes, "wb") as f:
-            pickle.dump(committed_cluster_sizes, f)
-        with open(fp_committed_cluster_llrs, "wb") as f:
-            pickle.dump(committed_cluster_llrs, f)
+        # Save cluster CSR arrays as compressed NPZ files
+        sparse.save_npz(fp_all_clusters, all_clusters_csr)
+        sparse.save_npz(fp_committed_clusters, committed_clusters_csr)
 
         current_simulated_for_config += to_run
         remaining -= to_run

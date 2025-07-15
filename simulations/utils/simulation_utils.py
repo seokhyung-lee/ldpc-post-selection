@@ -383,10 +383,8 @@ def bplsd_sliding_window_simulation_task_single(
     decoder_prms: Dict[str, Any] | None = None,
 ) -> Tuple[
     np.ndarray,
-    List[List[np.ndarray]],
-    List[List[np.ndarray]],
-    List[List[np.ndarray]],
-    List[List[np.ndarray]],
+    sparse.csr_array,
+    sparse.csr_array,
 ]:
     """
     Run a single sliding window simulation task for a given circuit and decoder parameters.
@@ -408,14 +406,12 @@ def bplsd_sliding_window_simulation_task_single(
     -------
     fails : 1D numpy array of bool
         Boolean array indicating if the decoding failed for each shot.
-    cluster_sizes : list of list of 1D numpy array of int
-        List of cluster sizes from all windows for each shot.
-    cluster_llrs : list of list of 1D numpy array of float
-        List of cluster LLRs from all windows for each shot.
-    committed_cluster_sizes : list of list of 1D numpy array of int
-        List of committed cluster sizes after each window for each shot.
-    committed_cluster_llrs : list of list of 1D numpy array of float
-        List of committed cluster LLRs after each window for each shot.
+    all_clusters_csr : scipy.sparse.csr_array
+        2D CSR array containing all cluster information for all shots in this task.
+        Each row corresponds to one shot.
+    committed_clusters_csr : scipy.sparse.csr_array
+        2D boolean CSR array containing committed cluster information for all shots in this task.
+        Each row corresponds to one shot.
     """
     if decoder_prms is None:
         decoder_prms = {}
@@ -427,11 +423,11 @@ def bplsd_sliding_window_simulation_task_single(
     )
 
     fails_list = []
-    cluster_sizes_list = []
-    cluster_llrs_list = []
-    committed_cluster_sizes_list = []
-    committed_cluster_llrs_list = []
-
+    all_clusters_list = []  # For CSR arrays
+    committed_clusters_list = []  # For CSR arrays
+    
+    max_cluster_idx = 0
+    
     for _ in range(shots):
         # Use simulate_single with sliding window
         fail, soft_outputs = decoder.simulate_single(
@@ -439,25 +435,36 @@ def bplsd_sliding_window_simulation_task_single(
             window_size=window_size,
             commit_size=commit_size,
         )
-
         fails_list.append(fail)
-
-        # Extract all window cluster data
-        cluster_sizes_list.append(soft_outputs["cluster_sizes"])
-        cluster_llrs_list.append(soft_outputs["cluster_llrs"])
-
-        # Extract all committed cluster data
-        committed_cluster_sizes_list.append(soft_outputs["committed_cluster_sizes"])
-        committed_cluster_llrs_list.append(soft_outputs["committed_cluster_llrs"])
-
+        
+        # Extract all_clusters and committed_clusters
+        all_clusters = soft_outputs["all_clusters"]  # List of numpy arrays (int)
+        committed_clusters = soft_outputs["committed_clusters"]  # List of numpy arrays (bool)
+        
+        # Concatenate all windows' clusters into a single array for this shot
+        all_clusters_concat = np.concatenate(all_clusters) if all_clusters else np.array([], dtype=int)
+        committed_clusters_concat = np.concatenate(committed_clusters) if committed_clusters else np.array([], dtype=bool)
+        
+        # Track max cluster index for optimal dtype
+        if len(all_clusters_concat) > 0:
+            max_cluster_idx = max(max_cluster_idx, all_clusters_concat.max())
+        
+        # Convert to CSR arrays (1D arrays will become single-row CSR arrays)
+        all_clusters_list.append(sparse.csr_array(all_clusters_concat))
+        committed_clusters_list.append(sparse.csr_array(committed_clusters_concat, dtype=bool))
+    
     fails_arr = np.array(fails_list)
-
+    
+    # Stack all shots' CSR arrays into 2D CSR arrays
+    # Determine optimal dtype for all_clusters based on max cluster index
+    optimal_dtype = _get_optimal_uint_dtype(max_cluster_idx)
+    all_clusters_csr = sparse.vstack([sparse.csr_array(arr, dtype=optimal_dtype) for arr in all_clusters_list], format="csr")
+    committed_clusters_csr = sparse.vstack(committed_clusters_list, format="csr")
+    
     return (
         fails_arr,
-        cluster_sizes_list,
-        cluster_llrs_list,
-        committed_cluster_sizes_list,
-        committed_cluster_llrs_list,
+        all_clusters_csr,
+        committed_clusters_csr,
     )
 
 
@@ -471,10 +478,8 @@ def bplsd_sliding_window_simulation_task_parallel(
     decoder_prms: Dict[str, Any] | None = None,
 ) -> Tuple[
     np.ndarray,
-    List[List[np.ndarray]],
-    List[List[np.ndarray]],
-    List[List[np.ndarray]],
-    List[List[np.ndarray]],
+    sparse.csr_array,
+    sparse.csr_array,
 ]:
     """
     Run sliding window simulations in parallel and return results.
@@ -500,14 +505,12 @@ def bplsd_sliding_window_simulation_task_parallel(
     -------
     fails : 1D numpy array of bool
         Boolean array indicating if the decoding failed for each shot.
-    cluster_sizes : list of list of 1D numpy array of int
-        List of cluster sizes from all windows for each shot.
-    cluster_llrs : list of list of 1D numpy array of float
-        List of cluster LLRs from all windows for each shot.
-    committed_cluster_sizes : list of list of 1D numpy array of int
-        List of committed cluster sizes after each window for each shot.
-    committed_cluster_llrs : list of list of 1D numpy array of float
-        List of committed cluster LLRs after each window for each shot.
+    all_clusters_csr : scipy.sparse.csr_array
+        2D CSR array containing all cluster information for all samples.
+        Each row corresponds to one sample.
+    committed_clusters_csr : scipy.sparse.csr_array
+        2D boolean CSR array containing committed cluster information for all samples.
+        Each row corresponds to one sample.
     """
     if shots == 0:
         raise ValueError("Total number of shots to simulate must be greater than 0.")
@@ -533,31 +536,21 @@ def bplsd_sliding_window_simulation_task_parallel(
     # Unpack and combine results
     (
         fails_l,
-        cluster_sizes_l,
-        cluster_llrs_l,
-        committed_cluster_sizes_l,
-        committed_cluster_llrs_l,
+        all_clusters_csr_l,
+        committed_clusters_csr_l,
     ) = zip(*results)
 
     # Combine fails into single array
     fails = np.concatenate(fails_l)
 
-    # Flatten lists of cluster data (list of lists structure)
-    cluster_sizes = [item for sublist in cluster_sizes_l for item in sublist]
-    cluster_llrs = [item for sublist in cluster_llrs_l for item in sublist]
-    committed_cluster_sizes = [
-        item for sublist in committed_cluster_sizes_l for item in sublist
-    ]
-    committed_cluster_llrs = [
-        item for sublist in committed_cluster_llrs_l for item in sublist
-    ]
+    # Concatenate CSR arrays from all tasks
+    all_clusters_csr = sparse.vstack(all_clusters_csr_l, format="csr")
+    committed_clusters_csr = sparse.vstack(committed_clusters_csr_l, format="csr")
 
     return (
         fails,
-        cluster_sizes,
-        cluster_llrs,
-        committed_cluster_sizes,
-        committed_cluster_llrs,
+        all_clusters_csr,
+        committed_clusters_csr,
     )
 
 
