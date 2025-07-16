@@ -119,6 +119,10 @@ def calculate_df_agg_for_combination(
         - "average_cluster_size": Average cluster size calculated as (2-norm)^2 / (1-norm) for cluster sizes.
         - "average_cluster_llr": Average cluster LLR calculated as (2-norm)^2 / (1-norm) for cluster LLRs.
                                  Requires `priors`.
+        - "cluster_size_norm_frac": Calculates cluster_size_norm divided by number of faults.
+                                    Requires `norm_order`.
+        - "cluster_llr_norm_frac": Calculates cluster_llr_norm divided by summation of LLRs.
+                                   Requires `norm_order` and `priors`.
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm-based methods.
         Must be a positive float (can be np.inf).
@@ -637,6 +641,10 @@ def extract_sample_metric_values(
         - "average_cluster_size": Average cluster size calculated as (2-norm)^2 / (1-norm) for cluster sizes.
         - "average_cluster_llr": Average cluster LLR calculated as (2-norm)^2 / (1-norm) for cluster LLRs.
                                  Requires `priors`.
+        - "cluster_size_norm_frac": Calculates cluster_size_norm divided by number of faults.
+                                    Requires `norm_order`.
+        - "cluster_llr_norm_frac": Calculates cluster_llr_norm divided by summation of LLRs.
+                                   Requires `norm_order` and `priors`.
         - All the other values are read from the 'scalars.feather' file.
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
@@ -786,6 +794,10 @@ def aggregate_data(
         - "average_cluster_size": Average cluster size calculated as (2-norm)^2 / (1-norm) for cluster sizes.
         - "average_cluster_llr": Average cluster LLR calculated as (2-norm)^2 / (1-norm) for cluster LLRs.
                                  Requires `priors`.
+        - "cluster_size_norm_frac": Calculates cluster_size_norm divided by number of faults.
+                                    Requires `norm_order`.
+        - "cluster_llr_norm_frac": Calculates cluster_llr_norm divided by summation of LLRs.
+                                   Requires `norm_order` and `priors`.
         - All the other values are read from the 'scalars.feather' file.
     decimals : int, optional
         Number of decimal places to round to. Can be negative for rounding to tens, hundreds, etc.
