@@ -453,6 +453,80 @@ def _load_and_calculate_legacy_metrics(
         )
         timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
 
+    elif by == "cluster_size_norm_frac":
+        # Calculate cluster_size_norm / (number of faults)
+        start_file_load = time.perf_counter()
+        cluster_sizes_flat = np.load(cluster_sizes_path, allow_pickle=False)
+        timing_info["cluster_file_load_time"] = time.perf_counter() - start_file_load
+
+        start_calc = time.perf_counter()
+        # Calculate norm at requested order
+        inside_cluster_size_norms, outside_value = (
+            _calculate_cluster_norms_from_flat_data_numba(
+                flat_data=cluster_sizes_flat,
+                offsets=offsets,
+                norm_order=norm_order,
+                sample_indices=local_sample_indices,
+            )
+        )
+        
+        # Calculate norm at order=1 for denominator (number of faults)
+        if norm_order == 1.0:
+            inside_cluster_size_norms_1 = inside_cluster_size_norms
+        else:
+            inside_cluster_size_norms_1, _ = (
+                _calculate_cluster_norms_from_flat_data_numba(
+                    flat_data=cluster_sizes_flat,
+                    offsets=offsets,
+                    norm_order=1.0,
+                    sample_indices=local_sample_indices,
+                )
+            )
+        
+        # Calculate fractions: norm / (outside_value + inside_norm_1)
+        cluster_metrics = np.full(num_samples, np.nan, dtype=float)
+        denominators = outside_value + inside_cluster_size_norms_1
+        valid_mask = denominators > 0
+        cluster_metrics[valid_mask] = inside_cluster_size_norms[valid_mask] / denominators[valid_mask]
+        timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
+
+    elif by == "cluster_llr_norm_frac":
+        # Calculate cluster_llr_norm / (summation of LLRs)
+        start_file_load = time.perf_counter()
+        cluster_llrs_flat = np.load(cluster_llrs_path, allow_pickle=False)
+        timing_info["cluster_file_load_time"] = time.perf_counter() - start_file_load
+
+        start_calc = time.perf_counter()
+        # Calculate norm at requested order
+        inside_cluster_llr_norms, outside_value = (
+            _calculate_cluster_norms_from_flat_data_numba(
+                flat_data=cluster_llrs_flat,
+                offsets=offsets,
+                norm_order=norm_order,
+                sample_indices=local_sample_indices,
+            )
+        )
+        
+        # Calculate norm at order=1 for denominator (summation of LLRs)
+        if norm_order == 1.0:
+            inside_cluster_llr_norms_1 = inside_cluster_llr_norms
+        else:
+            inside_cluster_llr_norms_1, _ = (
+                _calculate_cluster_norms_from_flat_data_numba(
+                    flat_data=cluster_llrs_flat,
+                    offsets=offsets,
+                    norm_order=1.0,
+                    sample_indices=local_sample_indices,
+                )
+            )
+        
+        # Calculate fractions: norm / (outside_value + inside_norm_1)
+        cluster_metrics = np.full(num_samples, np.nan, dtype=float)
+        denominators = outside_value + inside_cluster_llr_norms_1
+        valid_mask = denominators > 0
+        cluster_metrics[valid_mask] = inside_cluster_llr_norms[valid_mask] / denominators[valid_mask]
+        timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
+
     else:
         raise ValueError(f"Unsupported method ({by}) for legacy data structure.")
 
@@ -669,6 +743,38 @@ def _load_and_calculate_new_format_metrics(
             inside_cluster_2norms[valid_mask] ** 2
         ) / inside_cluster_1norms[valid_mask]
         
+    elif by == "cluster_size_norm_frac":
+        # Calculate cluster_size_norm / (number of faults)
+        inside_cluster_size_norms, _ = calculate_cluster_metrics_from_csr(
+            clusters=clusters_csr,
+            method="norm",
+            priors=None,  # priors not needed for size calculations
+            norm_order=norm_order,
+        )
+        # Calculate fractions: norm / total_faults
+        cluster_metrics = np.full(len(df_scalars), np.nan, dtype=float)
+        total_faults = clusters_csr.shape[1]  # Number of columns
+        if total_faults > 0:
+            cluster_metrics = inside_cluster_size_norms / total_faults
+        
+    elif by == "cluster_llr_norm_frac":
+        # Calculate cluster_llr_norm / (summation of LLRs)
+        if priors is None:
+            raise ValueError("priors is required for cluster_llr_norm_frac calculation")
+        
+        inside_cluster_llr_norms, _ = calculate_cluster_metrics_from_csr(
+            clusters=clusters_csr,
+            method="llr_norm",
+            priors=priors,
+            norm_order=norm_order,
+        )
+        # Calculate fractions: norm / total_llr_sum
+        cluster_metrics = np.full(len(df_scalars), np.nan, dtype=float)
+        bit_llrs = np.log((1 - priors) / priors)
+        total_llr_sum = np.sum(bit_llrs)
+        if total_llr_sum > 0:
+            cluster_metrics = inside_cluster_llr_norms / total_llr_sum
+        
     else:
         cluster_metrics = calculate_cluster_metrics_from_csr(
             clusters=clusters_csr,
@@ -794,7 +900,7 @@ def _create_aggregation_series(
                 index=df_scalars.index,
             )
     
-    elif by in ["average_cluster_size", "average_cluster_llr"]:
+    elif by in ["average_cluster_size", "average_cluster_llr", "cluster_size_norm_frac", "cluster_llr_norm_frac"]:
         return pd.Series(cluster_metrics, index=df_scalars.index)
     
     elif "cluster" in by:
