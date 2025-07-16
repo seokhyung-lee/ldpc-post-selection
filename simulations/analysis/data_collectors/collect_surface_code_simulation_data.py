@@ -48,6 +48,7 @@ if __name__ == "__main__":
         ascending_confidences=ascending_confidences,
         orders=orders,
         dataset_type="surface",
+        decimals=(lambda by: 4 if by == "detector_density" else 2),
         verbose=False,
     )
 
@@ -58,6 +59,7 @@ if __name__ == "__main__":
         dataset_name=matching_dataset_name,
         ascending_confidences=ascending_confidences_matching,
         dataset_type="surface",
+        decimals=(lambda by: 4 if by == "detector_density" else 2),
         verbose=False,
     )
 

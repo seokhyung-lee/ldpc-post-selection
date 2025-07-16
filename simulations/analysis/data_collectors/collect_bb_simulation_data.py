@@ -31,6 +31,7 @@ if __name__ == "__main__":
         dataset_type="bb",
         ascending_confidences=ascending_confidences,
         orders=orders,
+        decimals=(lambda by: 4 if by == 'detector_density' else 2),
         verbose=False,
     )
 

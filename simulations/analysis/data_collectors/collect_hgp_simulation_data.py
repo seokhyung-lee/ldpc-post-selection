@@ -28,6 +28,7 @@ if __name__ == "__main__":
         ascending_confidences=ascending_confidences,
         orders=orders,
         num_hist_bins=num_hist_bins,
+        decimals=(lambda by: 4 if by == "detector_density" else 2),
         verbose=False,
     )
 

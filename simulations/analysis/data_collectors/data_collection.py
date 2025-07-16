@@ -1,7 +1,7 @@
 import os
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -292,7 +292,7 @@ def process_dataset(
     dataset_name: str,
     ascending_confidences: Dict[str, bool],
     orders: Optional[List[float]] = None,
-    decimals: int = 2,
+    decimals: int | Callable[[str], int] = 2,
     verbose: bool = False,
     dataset_type: Optional[str] = None,
 ) -> None:
@@ -338,6 +338,11 @@ def process_dataset(
         else:
             norm_orders = [None]
 
+        if callable(decimals):
+            decimals_by = decimals(by)
+        else:
+            decimals_by = decimals
+
         for order in norm_orders:
             if order is not None:
                 print(f"norm_order = {order}")
@@ -364,7 +369,7 @@ def process_dataset(
                     method_name,
                     by,
                     order,
-                    decimals,
+                    decimals_by,
                     ascending_confidence,
                     verbose,
                 )

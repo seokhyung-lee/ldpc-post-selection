@@ -167,11 +167,11 @@ if __name__ == "__main__":
     window_size = 3
     commit_size = 1
 
-    shots_per_batch = round(1e7)
+    shots_per_batch = round(5e6)
     total_shots = round(1e8)
     n_jobs = 18
     repeat = 10
-    dir_name = "bb_sliding_window_minsum_iter30_lsd0"
+    dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
 
     decoder_prms = {
         "max_iter": 30,

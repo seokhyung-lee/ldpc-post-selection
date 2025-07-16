@@ -36,6 +36,7 @@ if __name__ == "__main__":
         orders=orders,
         num_hist_bins=num_hist_bins,
         dataset_type="color",
+        decimals=(lambda by: 4 if by == "detector_density" else 2),
         verbose=False,
     )
 
