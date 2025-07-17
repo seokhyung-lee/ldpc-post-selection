@@ -103,7 +103,7 @@ def calculate_cluster_metrics_from_csr(
         )
 
 
-def _calculate_cluster_norms_from_flat_data_numba(
+def calculate_cluster_norms_from_flat_data(
     flat_data: np.ndarray,  # Any numeric array type
     offsets: np.ndarray,  # Any numeric array type (will be converted to int)
     norm_order: float,
@@ -484,23 +484,6 @@ def _numba_cluster_norm_kernel(
     return inside_norms, outside_values
 
 
-def _calculate_cluster_norms_from_csr_numba(
-    clusters: csr_matrix, bit_llrs: np.ndarray, norm_order: float, calculate_llrs: bool
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Calculate cluster norms from a CSR sparse matrix representation of clusters.
-
-    This is a backward compatibility wrapper for the unified function.
-    """
-    return calculate_cluster_metrics_from_csr(
-        clusters,
-        "norm",
-        bit_llrs=bit_llrs,
-        norm_order=norm_order,
-        calculate_llrs=calculate_llrs,
-    )
-
-
 @numba.njit(fastmath=True, cache=True)
 def _numba_inv_entropy_kernel(
     data: np.ndarray,
@@ -580,7 +563,7 @@ def _numba_inv_entropy_kernel(
     return cluster_inv_entropy_sums
 
 
-def _calculate_cluster_inv_entropies_from_csr(
+def calculate_cluster_inv_entropies_from_csr(
     clusters: csr_matrix, priors: np.ndarray
 ) -> np.ndarray:
     """
@@ -668,7 +651,7 @@ def _numba_inv_priors_kernel(
     return cluster_inv_prior_sums
 
 
-def _calculate_cluster_inv_priors_from_csr(
+def calculate_cluster_inv_priors_from_csr(
     clusters: csr_matrix, priors: np.ndarray
 ) -> np.ndarray:
     """

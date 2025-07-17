@@ -7,9 +7,8 @@ import pandas as pd
 from scipy import sparse
 
 from simulations.analysis.data_collectors.numpy_utils import (
-    _calculate_cluster_norms_from_flat_data_numba,
+    calculate_cluster_norms_from_flat_data,
     calculate_cluster_metrics_from_csr,
-    _calculate_sliding_window_norm_fractions,
     calculate_window_cluster_norm_fracs_from_csr,
     calculate_committed_cluster_norm_fractions_from_csr,
 )
@@ -480,7 +479,7 @@ def _load_and_calculate_legacy_metrics(
 
         start_calc = time.perf_counter()
         inside_cluster_size_norms, outside_value = (
-            _calculate_cluster_norms_from_flat_data_numba(
+            calculate_cluster_norms_from_flat_data(
                 flat_data=cluster_sizes_flat,
                 offsets=offsets,
                 norm_order=norm_order,
@@ -496,7 +495,7 @@ def _load_and_calculate_legacy_metrics(
 
         start_calc = time.perf_counter()
         inside_cluster_llr_norms, outside_value = (
-            _calculate_cluster_norms_from_flat_data_numba(
+            calculate_cluster_norms_from_flat_data(
                 flat_data=cluster_llrs_flat,
                 offsets=offsets,
                 norm_order=norm_order,
@@ -513,7 +512,7 @@ def _load_and_calculate_legacy_metrics(
 
         start_calc = time.perf_counter()
         inside_cluster_llr_norms, outside_value = (
-            _calculate_cluster_norms_from_flat_data_numba(
+            calculate_cluster_norms_from_flat_data(
                 flat_data=cluster_llrs_flat,
                 offsets=offsets,
                 norm_order=1.0,  # Always use L1 norm for residual sum
@@ -561,7 +560,7 @@ def _load_and_calculate_legacy_metrics(
         start_calc = time.perf_counter()
         # Calculate norm at requested order
         inside_cluster_size_norms, outside_value = (
-            _calculate_cluster_norms_from_flat_data_numba(
+            calculate_cluster_norms_from_flat_data(
                 flat_data=cluster_sizes_flat,
                 offsets=offsets,
                 norm_order=norm_order,
@@ -573,13 +572,11 @@ def _load_and_calculate_legacy_metrics(
         if norm_order == 1.0:
             inside_cluster_size_norms_1 = inside_cluster_size_norms
         else:
-            inside_cluster_size_norms_1, _ = (
-                _calculate_cluster_norms_from_flat_data_numba(
-                    flat_data=cluster_sizes_flat,
-                    offsets=offsets,
-                    norm_order=1.0,
-                    sample_indices=local_sample_indices,
-                )
+            inside_cluster_size_norms_1, _ = calculate_cluster_norms_from_flat_data(
+                flat_data=cluster_sizes_flat,
+                offsets=offsets,
+                norm_order=1.0,
+                sample_indices=local_sample_indices,
             )
 
         # Calculate fractions: norm / (outside_value + inside_norm_1)
@@ -600,7 +597,7 @@ def _load_and_calculate_legacy_metrics(
         start_calc = time.perf_counter()
         # Calculate norm at requested order
         inside_cluster_llr_norms, outside_value = (
-            _calculate_cluster_norms_from_flat_data_numba(
+            calculate_cluster_norms_from_flat_data(
                 flat_data=cluster_llrs_flat,
                 offsets=offsets,
                 norm_order=norm_order,
@@ -612,13 +609,11 @@ def _load_and_calculate_legacy_metrics(
         if norm_order == 1.0:
             inside_cluster_llr_norms_1 = inside_cluster_llr_norms
         else:
-            inside_cluster_llr_norms_1, _ = (
-                _calculate_cluster_norms_from_flat_data_numba(
-                    flat_data=cluster_llrs_flat,
-                    offsets=offsets,
-                    norm_order=1.0,
-                    sample_indices=local_sample_indices,
-                )
+            inside_cluster_llr_norms_1, _ = calculate_cluster_norms_from_flat_data(
+                flat_data=cluster_llrs_flat,
+                offsets=offsets,
+                norm_order=1.0,
+                sample_indices=local_sample_indices,
             )
 
         # Calculate fractions: norm / (outside_value + inside_norm_1)
@@ -668,14 +663,14 @@ def _calculate_average_cluster_metrics(
         Array of calculated average cluster metrics.
     """
     # Calculate 2-norm
-    inside_cluster_2norms, _ = _calculate_cluster_norms_from_flat_data_numba(
+    inside_cluster_2norms, _ = calculate_cluster_norms_from_flat_data(
         flat_data=flat_data,
         offsets=offsets,
         norm_order=2.0,
         sample_indices=local_sample_indices,
     )
     # Calculate 1-norm
-    inside_cluster_1norms, _ = _calculate_cluster_norms_from_flat_data_numba(
+    inside_cluster_1norms, _ = calculate_cluster_norms_from_flat_data(
         flat_data=flat_data,
         offsets=offsets,
         norm_order=1.0,

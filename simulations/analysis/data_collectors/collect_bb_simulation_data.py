@@ -11,15 +11,21 @@ if __name__ == "__main__":
     ascending_confidences = {
         # "pred_llr": False,
         # "detector_density": False,
-        "cluster_size_norm_frac": False,
+        # "cluster_size_norm_frac": False,
         "cluster_llr_norm_frac": False,
     }
 
     # orders = [0.5, 1, 2, np.inf]
     orders = [2]
 
-    data_dir_name = "bb_minsum_iter30_lsd0_raw"
-    dataset_name = "bb"
+    use_old_format_data = False
+
+    if use_old_format_data:
+        data_dir_name = "bb_minsum_iter30_lsd0"
+        dataset_name = "bb_old"
+    else:
+        data_dir_name = "bb_minsum_iter30_lsd0_raw"
+        dataset_name = "bb"
 
     data_dir = str(DATA_DIR / data_dir_name)
 
@@ -31,7 +37,7 @@ if __name__ == "__main__":
         dataset_type="bb",
         ascending_confidences=ascending_confidences,
         orders=orders,
-        decimals=(lambda by: 4 if by == 'detector_density' else 2),
+        decimals=(lambda by: 2 if by == "pred_llr" else 4),
         verbose=False,
     )
 
