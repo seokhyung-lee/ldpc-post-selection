@@ -434,7 +434,7 @@ class ToricCodePercolation:
 
         # Calculate Lk-norms for all samples using calculate_cluster_metrics_from_csr
         inside_norms, _ = calculate_cluster_metrics_from_csr(
-            cluster_csr, method="norm", norm_order=k, precompile=True
+            cluster_csr, method="norm", norm_order=k
         )
 
         # Calculate k-th moment estimation for each sample: (Lk-norm)^k / num_qubits
@@ -485,7 +485,7 @@ class ToricCodePercolation:
 
         # Get cluster size distribution
         cluster_sizes, total_numbers = get_cluster_size_distribution_from_csr(
-            cluster_csr, precompile=False
+            cluster_csr
         )
 
         # Calculate cluster number density: total_numbers / num_qubits / num_samples
@@ -533,7 +533,7 @@ class ToricCodePercolation:
 
         # Get cluster size distribution
         cluster_sizes, total_numbers = get_cluster_size_distribution_from_csr(
-            cluster_csr, precompile=True
+            cluster_csr
         )
 
         # Calculate cluster number density: total_numbers / num_qubits / num_samples
@@ -621,7 +621,7 @@ class ToricCodePercolation:
         # Calculate L∞-norms for all samples using calculate_cluster_metrics_from_csr
         # L∞-norm gives the maximum cluster size for each sample
         max_cluster_sizes, _ = calculate_cluster_metrics_from_csr(
-            cluster_csr, method="norm", norm_order=np.inf, precompile=True
+            cluster_csr, method="norm", norm_order=np.inf
         )
 
         # Convert to integers

@@ -1,59 +1,9 @@
 import numba
 import numpy as np
-from typing import Tuple, List, Callable
+from typing import Tuple, List
 from scipy.sparse import csr_matrix
 
 
-def _precompile_and_run_numba_kernel(kernel: Callable, precompile: bool, *args) -> any:
-    """
-    Pre-compiles a Numba kernel (if requested) and then runs it with actual data.
-
-    If `precompile` is True, this function infers the required dtypes from the
-    provided arguments, constructs suitable dummy data, and calls the kernel to
-    trigger JIT compilation. It then proceeds to run the kernel with the
-    actual arguments. It includes specific logic for CSR-like data
-    structures that require special handling (e.g., `indptr` arrays).
-
-    Parameters
-    ----------
-    kernel : Numba jitted function
-        The Numba kernel to pre-compile and run.
-    precompile : bool
-        If True, the kernel is pre-compiled before execution.
-    *args :
-        Actual arguments to be passed to the kernel.
-
-    Returns
-    -------
-    return_value : any
-        The result of executing the kernel with the provided arguments.
-    """
-    if precompile:
-        dummy_args = []
-        for i, arg in enumerate(args):
-            if isinstance(arg, np.ndarray):
-                # Special handling for CSR-based kernels where `indptr` (arg 2)
-                # must be `[0]` for a zero-sample case.
-                if "cluster" in kernel.__name__ and i == 2:
-                    dummy_args.append(np.zeros(1, dtype=arg.dtype))
-                else:
-                    dummy_args.append(np.empty(0, dtype=arg.dtype))
-            elif isinstance(arg, bool):
-                dummy_args.append(False)
-            elif isinstance(arg, int):
-                dummy_args.append(0)
-            elif isinstance(arg, float):
-                dummy_args.append(0.0)
-            else:
-                dummy_args.append(arg)
-
-        try:
-            kernel(*dummy_args)
-        except Exception:
-            # Exceptions are expected with dummy data; the goal is compilation.
-            pass
-
-    return kernel(*args)
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -379,7 +329,6 @@ def calculate_cluster_metrics_from_csr(
     method: str,
     priors: np.ndarray | None = None,
     norm_order: float = 2.0,
-    precompile: bool = False,
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     """
     Calculate various cluster metrics from a CSR sparse matrix representation.
@@ -395,8 +344,6 @@ def calculate_cluster_metrics_from_csr(
         Prior probabilities for each bit position. Required for "inv_entropy" and "inv_prior_sum".
     norm_order : float, default 2.0
         The order p for the L_p norm calculation (can be np.inf). Only used for "norm".
-    precompile : bool, default False
-        If True, pre-compiles the required Numba kernel if it's not already compiled.
 
     Returns
     -------
@@ -426,9 +373,7 @@ def calculate_cluster_metrics_from_csr(
 
         max_cluster_id = int(clusters.data.max()) if clusters.nnz > 0 else 0
 
-        return _precompile_and_run_numba_kernel(
-            _numba_cluster_norm_kernel,
-            precompile,
+        return _numba_cluster_norm_kernel(
             clusters.data,
             clusters.indices,
             clusters.indptr,
@@ -447,9 +392,7 @@ def calculate_cluster_metrics_from_csr(
         if clusters.nnz == 0:
             return np.zeros(num_samples, dtype=np.float64)
 
-        return _precompile_and_run_numba_kernel(
-            _numba_inv_entropy_kernel,
-            precompile,
+        return _numba_inv_entropy_kernel(
             clusters.data,
             clusters.indices,
             clusters.indptr,
@@ -465,9 +408,7 @@ def calculate_cluster_metrics_from_csr(
         if clusters.nnz == 0:
             return np.zeros(num_samples, dtype=np.float64)
 
-        return _precompile_and_run_numba_kernel(
-            _numba_inv_priors_kernel,
-            precompile,
+        return _numba_inv_priors_kernel(
             clusters.data,
             clusters.indices,
             clusters.indptr,
@@ -487,7 +428,6 @@ def _calculate_cluster_norms_from_flat_data_numba(
     offsets: np.ndarray,  # Any numeric array type (will be converted to int)
     norm_order: float,
     sample_indices: np.ndarray | None = None,  # Optional sample filtering
-    precompile: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Optimized calculation of L_p norms for each sample from flattened cluster data.
@@ -503,8 +443,6 @@ def _calculate_cluster_norms_from_flat_data_numba(
         The order p for the L_p norm. Must be positive (can be np.inf).
     sample_indices : 1D numpy array of int, optional
         Array of sample indices to include in the calculation. If None, all samples are processed.
-    precompile : bool, default False
-        If True, pre-compiles the required Numba kernel if it's not already compiled.
 
     Returns
     -------
@@ -521,17 +459,13 @@ def _calculate_cluster_norms_from_flat_data_numba(
     the need for absolute value calculations and improving performance.
     """
     if sample_indices is None:
-        return _precompile_and_run_numba_kernel(
-            _calculate_cluster_norms_numba_kernel,
-            precompile,
+        return _calculate_cluster_norms_numba_kernel(
             flat_data,
             offsets,
             norm_order,
         )
     else:
-        return _precompile_and_run_numba_kernel(
-            _calculate_cluster_norms_filtered_numba_kernel,
-            precompile,
+        return _calculate_cluster_norms_filtered_numba_kernel(
             flat_data,
             offsets,
             norm_order,
@@ -1069,7 +1003,6 @@ def _calculate_sliding_window_norm_fractions(
     cluster_data_list: List[List[np.ndarray]],
     norm_order: float,
     aggregation_type: str,
-    precompile: bool = False,
 ) -> np.ndarray:
     """
     Calculate norm fractions for sliding window cluster data.
@@ -1082,8 +1015,6 @@ def _calculate_sliding_window_norm_fractions(
         Order for L_p norm calculation.
     aggregation_type : str
         Type of aggregation: "mean", "max", or "committed".
-    precompile : bool, default False
-        If True, pre-compiles the required Numba kernel if it's not already compiled.
 
     Returns
     -------
@@ -1129,9 +1060,7 @@ def _calculate_sliding_window_norm_fractions(
     agg_type_int = {"mean": 0, "max": 1, "committed": 2}[aggregation_type]
 
     # Process all shots using numba kernel
-    return _precompile_and_run_numba_kernel(
-        _calculate_sliding_window_norm_fractions_numba,
-        precompile,
+    return _calculate_sliding_window_norm_fractions_numba(
         flat_data_np,
         shot_offsets_np,
         window_offsets_np,
@@ -1287,7 +1216,6 @@ def _calculate_sliding_window_norm_fractions_numba(
 
 def get_cluster_size_distribution_from_csr(
     clusters: csr_matrix,
-    precompile: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Calculate the distribution of cluster sizes from a CSR sparse matrix representation.
@@ -1297,8 +1225,6 @@ def get_cluster_size_distribution_from_csr(
     clusters : scipy sparse CSR matrix
         Sparse matrix where rows represent samples and columns represent bits.
         Non-zero values contain cluster IDs, with 0 representing outside clusters.
-    precompile : bool, default False
-        If True, pre-compiles the required Numba kernel if it's not already compiled.
 
     Returns
     -------
@@ -1317,9 +1243,7 @@ def get_cluster_size_distribution_from_csr(
     if clusters.nnz == 0:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
 
-    return _precompile_and_run_numba_kernel(
-        _get_cluster_size_distribution_numba_kernel,
-        precompile,
+    return _get_cluster_size_distribution_numba_kernel(
         clusters.data,
         clusters.indices,
         clusters.indptr,
