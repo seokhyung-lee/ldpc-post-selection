@@ -376,6 +376,13 @@ def _handle_new_csr_sliding_window_metrics(
         start_file_load = time.perf_counter()
         committed_clusters_path = os.path.join(batch_dir_path, "committed_clusters.npz")
         committed_clusters_csr = sparse.load_npz(committed_clusters_path)
+        
+        # Load committed_faults.npz from parent directory (configuration level)
+        sub_data_dir = os.path.dirname(batch_dir_path)
+        committed_faults_path = os.path.join(sub_data_dir, "committed_faults.npz")
+        committed_faults_data = np.load(committed_faults_path)
+        committed_faults = [committed_faults_data[f'arr_{i}'] for i in range(len(committed_faults_data.files))]
+        
         timing_info["cluster_file_load_time"] = time.perf_counter() - start_file_load
 
         # Filter samples if needed
@@ -392,6 +399,7 @@ def _handle_new_csr_sliding_window_metrics(
         start_calc = time.perf_counter()
         norm_fractions = calculate_committed_cluster_norm_fractions_from_csr(
             committed_clusters_csr,
+            committed_faults,
             priors,
             adj_matrix,
             norm_order,

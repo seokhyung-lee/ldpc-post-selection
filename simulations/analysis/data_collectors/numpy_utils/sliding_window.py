@@ -316,6 +316,7 @@ def _compute_logical_or_across_windows(window_matrices: List[csr_matrix]) -> csr
 
 def calculate_committed_cluster_norm_fractions_from_csr(
     committed_clusters_csr: csr_matrix,
+    committed_faults: List[np.ndarray],
     priors: np.ndarray,
     adj_matrix: np.ndarray,
     norm_order: float,
@@ -333,6 +334,9 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     committed_clusters_csr : scipy sparse CSR matrix
         CSR matrix of booleans where rows correspond to samples and column "i*num_faults + j"
         corresponds to the j-th fault of i-th window.
+    committed_faults : list of 1D numpy arrays
+        List of boolean arrays representing committed faults for each window.
+        Each array has shape (num_faults,) indicating which faults are committed in that window.
     priors : 1D numpy array of float
         Prior probabilities for each fault (determines num_faults).
     adj_matrix : 2D numpy array of bool
@@ -366,6 +370,21 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     # Compute logical OR across windows to get combined committed clusters
     # shape: (num_samples, num_faults)
     combined_committed = _compute_logical_or_across_windows(window_matrices)
+    
+    # Process committed_faults to get total committed region
+    # Determine which windows to consider based on eval_windows
+    if eval_windows is not None:
+        start_window = max(0, eval_windows[0])
+        end_window = min(len(committed_faults), eval_windows[1] + 1)
+        selected_committed_faults = committed_faults[start_window:end_window]
+    else:
+        selected_committed_faults = committed_faults
+    
+    # Combine committed faults across windows using logical OR
+    if selected_committed_faults:
+        combined_committed_faults = np.logical_or.reduce(selected_committed_faults)
+    else:
+        combined_committed_faults = np.zeros(num_faults, dtype=bool)
 
     # Process each sample to convert boolean matrix to labeled clusters
     norm_fractions = np.zeros(num_samples, dtype=float)
@@ -407,8 +426,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
                     )
 
                 # Total number of committed faults
-                total_faults = combined_committed.shape[1]
-                norm_fractions[sample_idx] = inside_norm / total_faults
+                total_committed_faults = np.sum(combined_committed_faults)
+                norm_fractions[sample_idx] = inside_norm / total_committed_faults if total_committed_faults > 0 else 0.0
             else:
                 norm_fractions[sample_idx] = 0.0
 
@@ -443,8 +462,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
                         1.0 / norm_order
                     )
 
-                # Total LLR sum for committed faults
-                total_llr_sum = np.sum(bit_llrs[committed_cluster_fault_indices])
+                # Total LLR sum for all committed faults
+                total_llr_sum = np.sum(bit_llrs[combined_committed_faults])
                 norm_fractions[sample_idx] = (
                     inside_norm / total_llr_sum if total_llr_sum > 0 else 0.0
                 )
