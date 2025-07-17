@@ -864,7 +864,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         detector_outcomes: np.ndarray | List[bool | int],
         window_size: int,
         commit_size: int,
-        norm_frac_orders: Optional[List[float]] = None,
         verbose: bool = False,
         _benchmarking: bool = False,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -879,10 +878,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             Number of rounds in each window.
         commit_size : int
             Number of rounds for each commitment.
-        norm_frac_orders : list of float, optional
-            Orders for computing norm fractions of cluster sizes and LLRs.
-            Can include positive numbers and np.inf. If provided, norm fractions
-            are computed for each window and stored in soft_outputs. Defaults to None.
         verbose : bool, optional
             If True, print progress information. Defaults to False.
         _benchmarking : bool
@@ -895,16 +890,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             Predicted error pattern.
         soft_outputs : dict
             Aggregated soft outputs from all windows containing:
-            - clusters: list of cluster assignments for each window
-            - cluster_sizes: list of cluster sizes for each window
-            - cluster_llrs: list of cluster LLRs for each window
-            - committed_clusters: list of cluster assignments (restricted to committed region so far) after each window (last element is final committed clusters)
-            - committed_cluster_sizes: list of cluster sizes (restricted to committed region so far) after each window
-            - committed_cluster_llrs: list of cluster LLRs (restricted to committed region so far) after each window
-            - cluster_size_norm_frac_{order}: list of norm fractions of cluster sizes for each window
-            - cluster_llr_norm_frac_{order}: list of norm fractions of cluster LLRs for each window
-            - committed_cluster_size_norm_frac_{order}: list of norm fractions of committed cluster sizes after each window
-            - committed_cluster_llr_norm_frac_{order}: list of norm fractions of committed cluster LLRs after each window
+            - all_clusters: list of cluster assignments for each window
+            - committed_clusters: list of integer arrays with committed cluster status 
+            after each window. For each fault, 1 means committed and in a cluster, 
+            -1 means committed but not in a cluster, and 0 means not committed.
         """
         if window_size <= commit_size:
             raise ValueError("W must be greater than F")
@@ -950,27 +939,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         window_committed_clusters = []
 
         all_committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
-
-        # Storage for norm fractions if requested
-        if norm_frac_orders is not None:
-            window_norm_fracs = {
-                f"cluster_size_norm_frac_{order}": [] for order in norm_frac_orders
-            }
-            window_norm_fracs.update(
-                {f"cluster_llr_norm_frac_{order}": [] for order in norm_frac_orders}
-            )
-            window_norm_fracs.update(
-                {
-                    f"committed_cluster_size_norm_frac_{order}": []
-                    for order in norm_frac_orders
-                }
-            )
-            window_norm_fracs.update(
-                {
-                    f"committed_cluster_llr_norm_frac_{order}": []
-                    for order in norm_frac_orders
-                }
-            )
 
         if _benchmarking:
             print(f"[Benchmarking] Initialization: {time.time() - step_start:.6f}s")
@@ -1098,26 +1066,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             # Store window soft outputs
             window_clusters.append(clusters_window)
 
-            # Compute norm fractions for window clusters if requested
-            if norm_frac_orders is not None:
-                # Norm fractions for window cluster sizes
-                size_norm_fracs = self._compute_norm_fractions(
-                    soft_outputs_window["cluster_sizes"], norm_frac_orders
-                )
-                for order, norm_frac in size_norm_fracs.items():
-                    window_norm_fracs[f"cluster_size_norm_frac_{order}"].append(
-                        norm_frac
-                    )
-
-                # Norm fractions for window cluster LLRs
-                llr_norm_fracs = self._compute_norm_fractions(
-                    soft_outputs_window["cluster_llrs"], norm_frac_orders
-                )
-                for order, norm_frac in llr_norm_fracs.items():
-                    window_norm_fracs[f"cluster_llr_norm_frac_{order}"].append(
-                        norm_frac
-                    )
-
             if _benchmarking:
                 elapsed = time.time() - step_time
                 benchmark_times["convert_to_full_size"].append(elapsed)
@@ -1168,9 +1116,12 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             all_committed_faults_mask |= commit_mask
 
             # Update committed clusters mask
-            committed_clusters_current_window = clusters_window.copy()
-            committed_clusters_current_window[~commit_mask] = 0
-            committed_clusters_current_window = committed_clusters_current_window > 0
+            # 0: not in commit_mask
+            # 1: in commit_mask and in a cluster
+            # -1: in commit_mask but not in a cluster
+            committed_clusters_current_window = np.zeros(self.H.shape[1], dtype=int)
+            committed_clusters_current_window[commit_mask & (clusters_window > 0)] = 1
+            committed_clusters_current_window[commit_mask & (clusters_window == 0)] = -1
 
             # Store window-wise committed clusters
             window_committed_clusters.append(committed_clusters_current_window)
@@ -1216,10 +1167,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             "all_clusters": window_clusters,
             "committed_clusters": window_committed_clusters,
         }
-
-        # Add norm fractions to soft outputs if computed
-        if norm_frac_orders is not None:
-            soft_outputs.update(window_norm_fracs)
 
         if verbose:
             print(f"\nSliding window decoding completed!")
