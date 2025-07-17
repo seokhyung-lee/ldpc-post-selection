@@ -891,9 +891,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         soft_outputs : dict
             Aggregated soft outputs from all windows containing:
             - all_clusters: list of cluster assignments for each window
-            - committed_clusters: list of integer arrays with committed cluster status 
-            after each window. For each fault, 1 means committed and in a cluster, 
-            -1 means committed but not in a cluster, and 0 means not committed.
+            - committed_clusters: list of boolean arrays after each window. 
+            True if fault is committed and in a cluster, False otherwise.
+            - committed_faults: list of boolean arrays after each window.
+            True if fault is committed, False otherwise.
         """
         if window_size <= commit_size:
             raise ValueError("W must be greater than F")
@@ -935,10 +936,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         # Storage for aggregated soft outputs
         window_clusters = []
 
-        # Storage for window-wise committed clusters
+        # Storage for window-wise committed clusters (boolean: True if committed AND in cluster)
         window_committed_clusters = []
 
-        all_committed_faults_mask = np.zeros(self.H.shape[1], dtype=bool)
+        # Storage for window-wise committed faults (boolean: True if committed)
+        window_committed_faults = []
 
         if _benchmarking:
             print(f"[Benchmarking] Initialization: {time.time() - step_start:.6f}s")
@@ -999,7 +1001,10 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             # Find columns (faults) that have at least one nonzero element
             # Exclude already-committed faults from this window
             fault_mask = np.asarray(H_window.sum(axis=0) > 0).ravel()
-            fault_mask = fault_mask & ~all_committed_faults_mask
+            if window_committed_faults:
+                # Compute committed faults mask from previous windows
+                committed_faults_mask = np.any(window_committed_faults, axis=0)
+                fault_mask = fault_mask & ~committed_faults_mask
 
             if _benchmarking:
                 elapsed = time.time() - step_time
@@ -1094,7 +1099,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                     H_commit_rows = self.H[commit_detector_mask, :]
                     commit_mask = np.asarray(H_commit_rows.sum(axis=0) > 0).ravel()
                     # Exclude already committed faults from commit region
-                    commit_mask &= ~all_committed_faults_mask
+                    if window_committed_faults:
+                        committed_faults_mask = np.any(window_committed_faults, axis=0)
+                        commit_mask &= ~committed_faults_mask
 
                     pred_to_commit = pred_window.copy()
                     pred_to_commit[~commit_mask] = False
@@ -1112,19 +1119,17 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 print(f"[Benchmarking] Window {w} - Determine commits: {elapsed:.6f}s")
                 step_time = time.time()
 
-            # Update committed faults mask with all faults in commit region
-            all_committed_faults_mask |= commit_mask
+            # No need to maintain separate committed faults mask - computed from window_committed_faults when needed
 
-            # Update committed clusters mask
-            # 0: not in commit_mask
-            # 1: in commit_mask and in a cluster
-            # -1: in commit_mask but not in a cluster
-            committed_clusters_current_window = np.zeros(self.H.shape[1], dtype=int)
-            committed_clusters_current_window[commit_mask & (clusters_window > 0)] = 1
-            committed_clusters_current_window[commit_mask & (clusters_window == 0)] = -1
+            # Track committed clusters (boolean: True if committed AND in cluster)
+            committed_clusters_current_window = commit_mask & (clusters_window > 0)
 
-            # Store window-wise committed clusters
+            # Track committed faults (boolean: True if committed)
+            committed_faults_current_window = commit_mask.copy()
+
+            # Store both arrays
             window_committed_clusters.append(committed_clusters_current_window)
+            window_committed_faults.append(committed_faults_current_window)
 
             if _benchmarking:
                 elapsed = time.time() - step_time
@@ -1166,6 +1171,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         soft_outputs = {
             "all_clusters": window_clusters,
             "committed_clusters": window_committed_clusters,
+            "committed_faults": window_committed_faults,
         }
 
         if verbose:
