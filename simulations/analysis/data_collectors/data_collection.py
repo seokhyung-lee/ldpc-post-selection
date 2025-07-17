@@ -369,6 +369,11 @@ def process_dataset(
                 method_name = f"{by}_{order}"
             else:
                 method_name = by
+            
+            # Add window information to method name if eval_windows is provided
+            if eval_windows is not None:
+                init_window, final_window = eval_windows
+                method_name = f"{method_name}_windows_{init_window}_to_{final_window}"
 
             print(f"Processing method: {method_name}")
 
