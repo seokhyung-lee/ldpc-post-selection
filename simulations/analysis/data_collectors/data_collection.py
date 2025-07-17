@@ -144,6 +144,8 @@ def process_single_subdirectory(
     decimals: int,
     ascending_confidence: bool,
     verbose: bool,
+    eval_windows: Optional[tuple[int, int]] = None,
+    adj_matrix: Optional[np.ndarray] = None,
 ) -> Dict[str, str | bool]:
     """
     Process a single subdirectory for data aggregation and post-selection.
@@ -166,6 +168,10 @@ def process_single_subdirectory(
         Whether to use ascending confidence.
     verbose : bool
         Whether to print detailed progress information.
+    eval_windows : Optional[tuple[int, int]], optional
+        If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    adj_matrix : Optional[np.ndarray], optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
 
     Returns
     -------
@@ -207,16 +213,18 @@ def process_single_subdirectory(
         except FileNotFoundError:
             priors = None  # pass for now, but will raise error later if needed
 
+        # Load adjacency matrix if not provided and needed for committed cluster metrics
+        if adj_matrix is None and "committed_cluster_" in by:
+            try:
+                adj_matrix_path = os.path.join(subdir_path, "adj_matrix.npy")
+                adj_matrix = np.load(adj_matrix_path)
+            except FileNotFoundError:
+                adj_matrix = None  # Will raise error later if needed
+
         # Call aggregate_data for this specific subdirectory
         try:
-            # For sliding window metrics with norm_frac, we need to pass the full method name
-            # that includes the order suffix
-            if "norm_frac" in by and order is not None:
-                aggregation_by = (
-                    method_name  # Use method_name which includes order suffix
-                )
-            else:
-                aggregation_by = by  # Use original by for non-sliding window metrics
+            # Use the original by parameter for all metrics
+            aggregation_by = by
 
             df_agg, agg_reused = aggregate_data(
                 subdir_path,  # Process individual subdirectory
@@ -227,6 +235,8 @@ def process_single_subdirectory(
                 df_existing=existing_df_agg,
                 verbose=verbose,
                 priors=priors,
+                eval_windows=eval_windows,
+                adj_matrix=adj_matrix,
             )
         except FileNotFoundError:
             return {
@@ -295,6 +305,8 @@ def process_dataset(
     decimals: int | Callable[[str], int] = 2,
     verbose: bool = False,
     dataset_type: Optional[str] = None,
+    eval_windows: Optional[tuple[int, int]] = None,
+    adj_matrix: Optional[np.ndarray] = None,
 ) -> None:
     """
     Process a dataset with given parameters.
@@ -318,6 +330,11 @@ def process_dataset(
     dataset_type : Optional[str], optional
         Type of dataset ('surface', 'bb', 'hgp'). If None, inferred from dataset_name.
         This determines how directory structure is interpreted.
+    eval_windows : Optional[tuple[int, int]], optional
+        If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    adj_matrix : Optional[np.ndarray], optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
+        If None, will attempt to load from each subdirectory's adj_matrix.npy file when needed.
     """
     # Infer dataset_type from dataset_name if not provided
     if dataset_type is None:
@@ -372,6 +389,8 @@ def process_dataset(
                     decimals_by,
                     ascending_confidence,
                     verbose,
+                    eval_windows,
+                    adj_matrix,
                 )
                 for subdir_info in subdirs_info
             ]

@@ -10,64 +10,6 @@ from ...utils.simulation_utils import get_existing_shots
 from .data_metric_calculation import get_values_for_binning_from_batch
 
 
-def _get_values_for_binning_from_batch(
-    batch_dir_path: str,
-    by: str,
-    norm_order: float | None,
-    priors: np.ndarray | None = None,
-    sample_indices: np.ndarray | None = None,
-    batch_start_idx: int = 0,
-    verbose: bool = False,
-) -> Tuple[pd.Series | None, pd.DataFrame | None, int, dict]:
-    """
-    Loads data from a single batch directory needed for a specific aggregation method ('by').
-
-    This function loads 'scalars.feather' and, if required by the 'by' method,
-    also loads cluster data. It supports both legacy format (cluster_sizes.npy, cluster_llrs.npy, offsets.npy)
-    and new format (clusters.npz with on-the-fly calculation).
-
-    This is now a wrapper around the refactored implementation in data_metric_calculation.py.
-
-    Parameters
-    ----------
-    batch_dir_path : str
-        Path to the batch directory.
-    by : str
-        The aggregation method.
-    norm_order : float, optional
-        Order for L_p norm calculation, required for norm-based 'by' methods.
-    priors : np.ndarray, optional
-        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
-    sample_indices : np.ndarray, optional
-        Array of global sample indices to include. If None, all samples are included.
-    batch_start_idx : int, optional
-        Starting global index for this batch. Defaults to 0.
-    verbose : bool, optional
-        If True, prints detailed loading information.
-
-    Returns
-    -------
-    series_to_bin : pd.Series or None
-        The Series containing values to be binned. None if essential files are missing
-        or data cannot be computed.
-    df_scalars : pd.DataFrame or None
-        The DataFrame loaded from 'scalars.feather'. None if 'scalars.feather' is missing.
-    original_batch_size : int
-        The original size of the batch before any filtering.
-    timing_info : dict
-        Dictionary containing detailed timing information for different steps.
-    """
-    return get_values_for_binning_from_batch(
-        batch_dir_path=batch_dir_path,
-        by=by,
-        norm_order=norm_order,
-        priors=priors,
-        sample_indices=sample_indices,
-        batch_start_idx=batch_start_idx,
-        verbose=verbose,
-    )
-
-
 def calculate_df_agg_for_combination(
     data_dir: str,
     decimals: int = 2,
@@ -78,6 +20,8 @@ def calculate_df_agg_for_combination(
     sample_indices: np.ndarray | None = None,
     verbose: bool = False,
     disable_tqdm: bool = False,
+    eval_windows: Tuple[int, int] | None = None,
+    adj_matrix: np.ndarray | None = None,
 ) -> Tuple[pd.DataFrame, int]:
     """
     Calculate the post-selection DataFrame (df_agg) for batch directories in a single parameter combination directory.
@@ -123,18 +67,34 @@ def calculate_df_agg_for_combination(
                                     Requires `norm_order`.
         - "cluster_llr_norm_frac": Calculates cluster_llr_norm divided by summation of LLRs.
                                    Requires `norm_order` and `priors`.
+        - "avg_window_cluster_size_norm_frac": Average cluster size norm fraction across windows (CSR format).
+                                               Requires `norm_order` and `priors`.
+        - "avg_window_cluster_llr_norm_frac": Average cluster LLR norm fraction across windows (CSR format).
+                                              Requires `norm_order` and `priors`.
+        - "max_window_cluster_size_norm_frac": Maximum cluster size norm fraction across windows (CSR format).
+                                               Requires `norm_order` and `priors`.
+        - "max_window_cluster_llr_norm_frac": Maximum cluster LLR norm fraction across windows (CSR format).
+                                              Requires `norm_order` and `priors`.
+        - "committed_cluster_size_norm_frac": Committed cluster size norm fraction (CSR format).
+                                              Requires `norm_order`, `priors`, and `adj_matrix`.
+        - "committed_cluster_llr_norm_frac": Committed cluster LLR norm fraction (CSR format).
+                                             Requires `norm_order`, `priors`, and `adj_matrix`.
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm-based methods.
         Must be a positive float (can be np.inf).
         Required if `by` is one of the norm or norm-gap methods.
     priors : np.ndarray, optional
-        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using CSR format.
     sample_indices : np.ndarray, optional
         Array of global sample indices to include in the aggregation. If None, all samples are included.
     verbose : bool, optional
         Whether to print progress and benchmarking information. Defaults to False.
     disable_tqdm : bool, optional
         Whether to disable tqdm progress bars. Defaults to False.
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    adj_matrix : np.ndarray, optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
 
     Returns
     -------
@@ -181,6 +141,8 @@ def calculate_df_agg_for_combination(
         sample_indices,
         verbose,
         disable_tqdm,
+        eval_windows,
+        adj_matrix,
     )
 
     # Print detailed benchmarking results if verbose
@@ -264,6 +226,8 @@ def _process_and_aggregate_batches_single_pass(
     sample_indices: np.ndarray | None = None,
     verbose: bool = False,
     disable_tqdm: bool = False,
+    eval_windows: Tuple[int, int] | None = None,
+    adj_matrix: np.ndarray | None = None,
 ) -> Tuple[pd.DataFrame, int, int, dict]:
     """
     Process all batch directories in a single pass and aggregate data using rounding and counting.
@@ -286,6 +250,12 @@ def _process_and_aggregate_batches_single_pass(
         Array of global sample indices to include. If None, all samples are included.
     verbose : bool, optional
         Whether to print progress information.
+    disable_tqdm : bool, optional
+        Whether to disable tqdm progress bars.
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    adj_matrix : np.ndarray, optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
 
     Returns
     -------
@@ -339,7 +309,7 @@ def _process_and_aggregate_batches_single_pass(
         batch_start_time = time.perf_counter()
 
         series_to_aggregate, df_scalars, original_batch_size, batch_timing = (
-            _get_values_for_binning_from_batch(
+            get_values_for_binning_from_batch(
                 batch_dir_path=batch_dir,
                 by=by,
                 norm_order=norm_order,
@@ -347,6 +317,8 @@ def _process_and_aggregate_batches_single_pass(
                 sample_indices=sample_indices,
                 batch_start_idx=current_batch_start_idx,
                 verbose=verbose > 1,
+                eval_windows=eval_windows,
+                adj_matrix=adj_matrix,
             )
         )
 
@@ -612,6 +584,8 @@ def extract_sample_metric_values(
     dtype: np.dtype = np.float32,
     verbose: bool = False,
     disable_tqdm: bool = False,
+    eval_windows: Tuple[int, int] | None = None,
+    adj_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Extract metric values for all samples from batch directories without binning.
@@ -645,12 +619,24 @@ def extract_sample_metric_values(
                                     Requires `norm_order`.
         - "cluster_llr_norm_frac": Calculates cluster_llr_norm divided by summation of LLRs.
                                    Requires `norm_order` and `priors`.
+        - "avg_window_cluster_size_norm_frac": Average cluster size norm fraction across windows (CSR format).
+                                               Requires `norm_order` and `priors`.
+        - "avg_window_cluster_llr_norm_frac": Average cluster LLR norm fraction across windows (CSR format).
+                                              Requires `norm_order` and `priors`.
+        - "max_window_cluster_size_norm_frac": Maximum cluster size norm fraction across windows (CSR format).
+                                               Requires `norm_order` and `priors`.
+        - "max_window_cluster_llr_norm_frac": Maximum cluster LLR norm fraction across windows (CSR format).
+                                              Requires `norm_order` and `priors`.
+        - "committed_cluster_size_norm_frac": Committed cluster size norm fraction (CSR format).
+                                              Requires `norm_order`, `priors`, and `adj_matrix`.
+        - "committed_cluster_llr_norm_frac": Committed cluster LLR norm fraction (CSR format).
+                                             Requires `norm_order`, `priors`, and `adj_matrix`.
         - All the other values are read from the 'scalars.feather' file.
     norm_order : float, optional
         The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
         Must be a positive float. Required if `by` is one of the norm-based methods.
     priors : np.ndarray, optional
-        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using CSR format.
     sample_indices : np.ndarray, optional
         Array of global sample indices to include. If None, all samples are included.
         The indices should be global across all batches (e.g., if batch 0 has 1000 samples and batch 1 has 1000 samples,
@@ -660,6 +646,12 @@ def extract_sample_metric_values(
         Common choices: np.float32, np.float64, np.int32, np.int64.
     verbose : bool, optional
         Whether to print progress and informational messages. Defaults to False.
+    disable_tqdm : bool, optional
+        Whether to disable tqdm progress bars. Defaults to False.
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    adj_matrix : np.ndarray, optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
 
     Returns
     -------
@@ -700,7 +692,7 @@ def extract_sample_metric_values(
     for batch_dir in tqdm(batch_dir_paths, desc=desc_text, disable=disable_tqdm):
         try:
             series_to_extract, df_scalars, original_batch_size, _ = (
-                _get_values_for_binning_from_batch(
+                get_values_for_binning_from_batch(
                     batch_dir_path=batch_dir,
                     by=by,
                     norm_order=norm_order,
@@ -708,6 +700,8 @@ def extract_sample_metric_values(
                     sample_indices=sample_indices,
                     batch_start_idx=current_batch_start_idx,
                     verbose=verbose > 1,
+                    eval_windows=eval_windows,
+                    adj_matrix=adj_matrix,
                 )
             )
 
@@ -765,6 +759,8 @@ def aggregate_data(
     df_existing: pd.DataFrame | None = None,
     verbose: bool = False,
     disable_tqdm: bool = False,
+    eval_windows: Tuple[int, int] | None = None,
+    adj_matrix: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, bool]:
     """
     Aggregate simulation data based on specified metrics from batch directories in a single parameter combination directory.
@@ -798,6 +794,18 @@ def aggregate_data(
                                     Requires `norm_order`.
         - "cluster_llr_norm_frac": Calculates cluster_llr_norm divided by summation of LLRs.
                                    Requires `norm_order` and `priors`.
+        - "avg_window_cluster_size_norm_frac": Average cluster size norm fraction across windows (CSR format).
+                                               Requires `norm_order` and `priors`.
+        - "avg_window_cluster_llr_norm_frac": Average cluster LLR norm fraction across windows (CSR format).
+                                              Requires `norm_order` and `priors`.
+        - "max_window_cluster_size_norm_frac": Maximum cluster size norm fraction across windows (CSR format).
+                                               Requires `norm_order` and `priors`.
+        - "max_window_cluster_llr_norm_frac": Maximum cluster LLR norm fraction across windows (CSR format).
+                                              Requires `norm_order` and `priors`.
+        - "committed_cluster_size_norm_frac": Committed cluster size norm fraction (CSR format).
+                                              Requires `norm_order`, `priors`, and `adj_matrix`.
+        - "committed_cluster_llr_norm_frac": Committed cluster LLR norm fraction (CSR format).
+                                             Requires `norm_order`, `priors`, and `adj_matrix`.
         - All the other values are read from the 'scalars.feather' file.
     decimals : int, optional
         Number of decimal places to round to. Can be negative for rounding to tens, hundreds, etc.
@@ -811,7 +819,7 @@ def aggregate_data(
         The order for L_p norm calculation when `by` is one of the norm or norm-gap methods.
         Must be a positive float. Required if `by` is one of the norm-based methods.
     priors : np.ndarray, optional
-        1D array of prior probabilities for each bit, required for cluster_llr calculations when using new format.
+        1D array of prior probabilities for each bit, required for cluster_llr calculations when using CSR format.
     sample_indices : np.ndarray, optional
         Array of global sample indices to include in the aggregation. If None, all samples are included.
         The indices should be global across all batches (e.g., if batch 0 has 1000 samples and batch 1 has 1000 samples,
@@ -824,6 +832,10 @@ def aggregate_data(
         Whether to print progress and informational messages. Defaults to False.
     disable_tqdm : bool, optional
         Whether to disable tqdm progress bars. Defaults to False.
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    adj_matrix : np.ndarray, optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
 
     Returns
     -------
@@ -927,6 +939,8 @@ def aggregate_data(
         sample_indices=sample_indices,
         verbose=verbose,
         disable_tqdm=disable_tqdm,
+        eval_windows=eval_windows,
+        adj_matrix=adj_matrix,
     )
 
     if verbose:
