@@ -114,3 +114,14 @@ All decoders implement the `decode()` method returning:
 - Simulation results are stored in structured directories with metadata
 - Analysis notebooks expect specific data formats and directory structures
 - Test fixtures use Stim-generated circuits for reproducible testing
+
+## Cluster Definitions
+
+Important definitions related to clusters:
+- Cluster: a set of faults.
+- Cluster size: number of faults in a cluster
+- Cluster LLR: summation of LLRs of faults in a cluster
+- Cluster size norm of order `alpha`: `alpha`-norm of the cluster size vector, i.e., sum(cluster_sizes**alpha)**(1/alpha)
+- Cluster LLR norm of order `alpha`: `alpha`-norm of the cluster LLR vector.
+- Cluster size norm fraction: Cluster size norm divided by total number of faults (including faults that don't belong to any clusters).
+- Cluster LLR norm fraction: Cluster LLR norm divided by the summation of all fault LLRs
