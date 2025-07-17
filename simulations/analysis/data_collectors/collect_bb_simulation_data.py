@@ -11,8 +11,8 @@ if __name__ == "__main__":
     ascending_confidences = {
         # "pred_llr": False,
         # "detector_density": False,
-        # "cluster_size_norm": False,
-        "cluster_llr_norm": False,
+        "cluster_size_norm_frac": False,
+        "cluster_llr_norm_frac": False,
     }
 
     # orders = [0.5, 1, 2, np.inf]

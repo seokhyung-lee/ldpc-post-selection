@@ -1408,3 +1408,291 @@ def _get_cluster_size_distribution_numba_kernel(
     sort_indices = np.argsort(cluster_sizes)
 
     return cluster_sizes[sort_indices], total_numbers[sort_indices]
+
+
+def _split_csr_by_windows(
+    csr_matrix: csr_matrix, 
+    num_faults: int, 
+    eval_windows: Tuple[int, int] | None = None
+) -> List[csr_matrix]:
+    """
+    Split a CSR matrix by windows where columns represent "i*num_faults + j".
+    
+    Parameters
+    ----------
+    csr_matrix : scipy sparse CSR matrix
+        Matrix where columns represent "i*num_faults + j" (j-th fault of i-th window).
+    num_faults : int
+        Number of faults per window.
+    eval_windows : tuple of int, optional
+        If provided, only return windows from init_eval_window to final_eval_window.
+        
+    Returns
+    -------
+    window_matrices : list of scipy sparse CSR matrix
+        List of CSR matrices, one for each window.
+    """
+    num_samples, total_cols = csr_matrix.shape
+    num_windows = total_cols // num_faults
+    
+    if total_cols % num_faults != 0:
+        raise ValueError(f"Total columns ({total_cols}) is not divisible by num_faults ({num_faults})")
+    
+    # Determine which windows to extract
+    if eval_windows is not None:
+        start_window, end_window = eval_windows
+        start_window = max(0, start_window)
+        end_window = min(num_windows, end_window + 1)  # +1 for inclusive end
+    else:
+        start_window, end_window = 0, num_windows
+    
+    window_matrices = []
+    for window_idx in range(start_window, end_window):
+        start_col = window_idx * num_faults
+        end_col = (window_idx + 1) * num_faults
+        window_matrix = csr_matrix[:, start_col:end_col]
+        window_matrices.append(window_matrix)
+    
+    return window_matrices
+
+
+def _compute_logical_or_across_windows(
+    window_matrices: List[csr_matrix]
+) -> csr_matrix:
+    """
+    Compute logical OR across multiple boolean CSR matrices.
+    
+    Parameters
+    ----------
+    window_matrices : list of scipy sparse CSR matrix
+        List of boolean CSR matrices to combine with logical OR.
+        
+    Returns
+    -------
+    combined_matrix : scipy sparse CSR matrix
+        Boolean CSR matrix representing logical OR of all input matrices.
+    """
+    if not window_matrices:
+        return csr_matrix((0, 0), dtype=bool)
+    
+    if len(window_matrices) == 1:
+        return window_matrices[0].astype(bool)
+    
+    # Start with the first matrix
+    combined = window_matrices[0].astype(bool)
+    
+    # Combine with remaining matrices using logical OR
+    for matrix in window_matrices[1:]:
+        combined = combined + matrix.astype(bool)
+        # Convert back to boolean (any non-zero becomes True)
+        combined.data = combined.data > 0
+    
+    return combined
+
+
+def calculate_window_cluster_norm_fractions_from_csr(
+    all_clusters_csr: csr_matrix,
+    priors: np.ndarray,
+    norm_order: float,
+    value_type: str,
+    aggregation_type: str,
+    eval_windows: Tuple[int, int] | None = None
+) -> np.ndarray:
+    """
+    Calculate window cluster norm fractions from CSR matrix for category 1 metrics.
+    
+    Parameters
+    ----------
+    all_clusters_csr : scipy sparse CSR matrix
+        CSR matrix of integers where columns represent "i*num_faults + j".
+    priors : 1D numpy array of float
+        Prior probabilities for each fault (determines num_faults).
+    norm_order : float
+        Order for L_p norm calculation.
+    value_type : str
+        Type of values to calculate: "size" or "llr".
+    aggregation_type : str
+        Type of aggregation across windows: "avg" or "max".
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window.
+        
+    Returns
+    -------
+    norm_fractions : 1D numpy array of float
+        Norm fractions for each sample after aggregation across windows.
+    """
+    num_faults = len(priors)
+    num_samples = all_clusters_csr.shape[0]
+    
+    # Split CSR matrix by windows
+    window_matrices = _split_csr_by_windows(all_clusters_csr, num_faults, eval_windows)
+    
+    if not window_matrices:
+        return np.zeros(num_samples, dtype=float)
+    
+    # Calculate norm fractions for each window
+    window_norm_fractions = np.zeros((num_samples, len(window_matrices)), dtype=float)
+    
+    for window_idx, window_matrix in enumerate(window_matrices):
+        # Calculate cluster metrics for this window
+        if value_type == "size":
+            # For size calculations, don't use priors (set to None)
+            inside_norms, _ = calculate_cluster_metrics_from_csr(
+                window_matrix,
+                method="norm",
+                priors=None,
+                norm_order=norm_order
+            )
+            # Calculate total number of faults for normalization
+            total_faults = window_matrix.shape[1]  # Number of columns (faults) in this window
+            norm_fractions = inside_norms / total_faults if total_faults > 0 else np.zeros_like(inside_norms)
+            
+        elif value_type == "llr":
+            # For LLR calculations, use priors
+            inside_norms, _ = calculate_cluster_metrics_from_csr(
+                window_matrix,
+                method="llr_norm",
+                priors=priors,
+                norm_order=norm_order
+            )
+            # Calculate total LLR sum for normalization
+            bit_llrs = np.log((1 - priors) / priors)
+            total_llr_sum = np.sum(bit_llrs)
+            norm_fractions = inside_norms / total_llr_sum if total_llr_sum > 0 else np.zeros_like(inside_norms)
+            
+        else:
+            raise ValueError(f"Unknown value_type: {value_type}. Must be 'size' or 'llr'.")
+        
+        window_norm_fractions[:, window_idx] = norm_fractions
+    
+    # Aggregate across windows
+    if aggregation_type == "avg":
+        aggregated_fractions = np.mean(window_norm_fractions, axis=1)
+    elif aggregation_type == "max":
+        aggregated_fractions = np.max(window_norm_fractions, axis=1)
+    else:
+        raise ValueError(f"Unknown aggregation_type: {aggregation_type}. Must be 'avg' or 'max'.")
+    
+    return aggregated_fractions
+
+
+def calculate_committed_cluster_norm_fractions_from_csr(
+    committed_clusters_csr: csr_matrix,
+    priors: np.ndarray,
+    adj_matrix: np.ndarray,
+    norm_order: float,
+    value_type: str,
+    eval_windows: Tuple[int, int] | None = None
+) -> np.ndarray:
+    """
+    Calculate committed cluster norm fractions from CSR matrix for category 2 metrics.
+    
+    Parameters
+    ----------
+    committed_clusters_csr : scipy sparse CSR matrix
+        CSR matrix of booleans where columns represent "i*num_faults + j".
+    priors : 1D numpy array of float
+        Prior probabilities for each fault (determines num_faults).
+    adj_matrix : 2D numpy array of bool
+        Adjacency matrix for cluster labeling.
+    norm_order : float
+        Order for L_p norm calculation.
+    value_type : str
+        Type of values to calculate: "size" or "llr".
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window.
+        
+    Returns
+    -------
+    norm_fractions : 1D numpy array of float
+        Norm fractions for each sample based on combined committed clusters.
+    """
+    # Import here to avoid circular imports
+    from src.ldpc_post_selection.cluster_tools import label_clusters
+    
+    num_faults = len(priors)
+    num_samples = committed_clusters_csr.shape[0]
+    
+    # Split CSR matrix by windows
+    window_matrices = _split_csr_by_windows(committed_clusters_csr, num_faults, eval_windows)
+    
+    if not window_matrices:
+        return np.zeros(num_samples, dtype=float)
+    
+    # Compute logical OR across windows to get combined committed clusters
+    combined_committed = _compute_logical_or_across_windows(window_matrices)
+    
+    # Process each sample to convert boolean matrix to labeled clusters
+    norm_fractions = np.zeros(num_samples, dtype=float)
+    
+    for sample_idx in range(num_samples):
+        # Extract the sample row as a dense boolean array
+        sample_row = combined_committed[sample_idx].toarray().flatten().astype(bool)
+        
+        # Find indices of committed faults for this sample
+        committed_fault_indices = np.where(sample_row)[0]
+        
+        if len(committed_fault_indices) == 0:
+            # No committed clusters, norm fraction is 0
+            norm_fractions[sample_idx] = 0.0
+            continue
+        
+        # Label clusters using the adjacency matrix
+        cluster_labels = label_clusters(adj_matrix, committed_fault_indices)
+        
+        # Extract cluster labels for committed faults only
+        committed_cluster_labels = cluster_labels[committed_fault_indices]
+        
+        # Calculate norm fractions based on cluster labels
+        if value_type == "size":
+            # Calculate cluster sizes and total
+            unique_clusters, cluster_sizes = np.unique(committed_cluster_labels[committed_cluster_labels > 0], return_counts=True)
+            
+            if len(cluster_sizes) > 0:
+                # Calculate norm of cluster sizes
+                if norm_order == 1.0:
+                    inside_norm = np.sum(cluster_sizes)
+                elif norm_order == 2.0:
+                    inside_norm = np.sqrt(np.sum(cluster_sizes ** 2))
+                elif np.isinf(norm_order):
+                    inside_norm = np.max(cluster_sizes)
+                else:
+                    inside_norm = np.sum(cluster_sizes ** norm_order) ** (1.0 / norm_order)
+                
+                # Total number of committed faults
+                total_faults = len(committed_fault_indices)
+                norm_fractions[sample_idx] = inside_norm / total_faults if total_faults > 0 else 0.0
+            else:
+                norm_fractions[sample_idx] = 0.0
+                
+        elif value_type == "llr":
+            # Calculate cluster LLR sums and total
+            bit_llrs = np.log((1 - priors) / priors)
+            
+            # Group LLRs by cluster
+            unique_clusters, inverse_indices = np.unique(committed_cluster_labels[committed_cluster_labels > 0], return_inverse=True)
+            
+            if len(unique_clusters) > 0:
+                # Calculate LLR sum for each cluster
+                cluster_llr_sums = np.bincount(inverse_indices, weights=bit_llrs[committed_fault_indices[committed_cluster_labels > 0]])
+                
+                # Calculate norm of cluster LLR sums
+                if norm_order == 1.0:
+                    inside_norm = np.sum(np.abs(cluster_llr_sums))
+                elif norm_order == 2.0:
+                    inside_norm = np.sqrt(np.sum(cluster_llr_sums ** 2))
+                elif np.isinf(norm_order):
+                    inside_norm = np.max(np.abs(cluster_llr_sums))
+                else:
+                    inside_norm = np.sum(np.abs(cluster_llr_sums) ** norm_order) ** (1.0 / norm_order)
+                
+                # Total LLR sum for committed faults
+                total_llr_sum = np.sum(bit_llrs[committed_fault_indices])
+                norm_fractions[sample_idx] = inside_norm / total_llr_sum if total_llr_sum > 0 else 0.0
+            else:
+                norm_fractions[sample_idx] = 0.0
+                
+        else:
+            raise ValueError(f"Unknown value_type: {value_type}. Must be 'size' or 'llr'.")
+    
+    return norm_fractions
