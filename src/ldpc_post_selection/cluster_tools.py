@@ -1,5 +1,6 @@
 from typing import Tuple
 
+import numba
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
@@ -34,7 +35,9 @@ def compute_cluster_stats(
     return cluster_sizes, cluster_llrs
 
 
-def label_clusters(adj_matrix: np.ndarray, vertices_inside_clusters: np.ndarray) -> np.ndarray:
+def label_clusters(
+    adj_matrix: np.ndarray, vertices_inside_clusters: np.ndarray
+) -> np.ndarray:
     """
     Label connected components (clusters) in an adjacency matrix for specified vertices.
 
@@ -54,7 +57,8 @@ def label_clusters(adj_matrix: np.ndarray, vertices_inside_clusters: np.ndarray)
     if adj_matrix.shape[0] != adj_matrix.shape[1]:
         raise ValueError("adjacency matrix must be square")
     if len(vertices_inside_clusters) > 0 and (
-        vertices_inside_clusters.max() >= adj_matrix.shape[0] or vertices_inside_clusters.min() < 0
+        vertices_inside_clusters.max() >= adj_matrix.shape[0]
+        or vertices_inside_clusters.min() < 0
     ):
         raise ValueError("inside_indices contains invalid vertex indices")
 

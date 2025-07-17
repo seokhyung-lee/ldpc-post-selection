@@ -10,12 +10,14 @@ from simulations.analysis.data_collectors.numpy_utils import (
     _calculate_cluster_norms_from_flat_data_numba,
     calculate_cluster_metrics_from_csr,
     _calculate_sliding_window_norm_fractions,
-    calculate_window_cluster_norm_fractions_from_csr,
+    calculate_window_cluster_norm_fracs_from_csr,
     calculate_committed_cluster_norm_fractions_from_csr,
 )
 
 
-def _detect_data_format(batch_dir_path: str, by: str, verbose: bool) -> Tuple[bool, bool, bool]:
+def _detect_data_format(
+    batch_dir_path: str, by: str, verbose: bool
+) -> Tuple[bool, bool, bool]:
     """
     Detect which data format is used in the batch directory.
 
@@ -39,15 +41,15 @@ def _detect_data_format(batch_dir_path: str, by: str, verbose: bool) -> Tuple[bo
     """
     # File paths
     scalars_path = os.path.join(batch_dir_path, "scalars.feather")
-    
+
     # Legacy format paths
     cluster_sizes_path = os.path.join(batch_dir_path, "cluster_sizes.npy")
     cluster_llrs_path = os.path.join(batch_dir_path, "cluster_llrs.npy")
     offsets_path = os.path.join(batch_dir_path, "offsets.npy")
-    
+
     # New format paths
     clusters_path = os.path.join(batch_dir_path, "clusters.npz")
-    
+
     # Sliding window format paths
     fails_path = os.path.join(batch_dir_path, "fails.npy")
     # New sliding window format (CSR-based)
@@ -64,10 +66,14 @@ def _detect_data_format(batch_dir_path: str, by: str, verbose: bool) -> Tuple[bo
         # Check if this is sliding window format
         if os.path.isfile(fails_path):
             # Check for new CSR-based sliding window format
-            if os.path.isfile(all_clusters_path) and os.path.isfile(committed_clusters_path):
+            if os.path.isfile(all_clusters_path) and os.path.isfile(
+                committed_clusters_path
+            ):
                 use_sliding_window_format = True
                 if verbose:
-                    print(f"  Using CSR-based sliding window format for {batch_dir_path}")
+                    print(
+                        f"  Using CSR-based sliding window format for {batch_dir_path}"
+                    )
             else:
                 if verbose:
                     print(
@@ -112,7 +118,9 @@ def _detect_data_format(batch_dir_path: str, by: str, verbose: bool) -> Tuple[bo
     return use_sliding_window_format, use_legacy_format, use_new_format
 
 
-def _load_scalars_data(batch_dir_path: str, use_sliding_window: bool, verbose: bool) -> Tuple[pd.DataFrame, int]:
+def _load_scalars_data(
+    batch_dir_path: str, use_sliding_window: bool, verbose: bool
+) -> Tuple[pd.DataFrame, int]:
     """
     Load scalars data from either scalars.feather or sliding window format.
 
@@ -147,7 +155,9 @@ def _load_scalars_data(batch_dir_path: str, use_sliding_window: bool, verbose: b
         # Load regular scalars.feather
         scalars_path = os.path.join(batch_dir_path, "scalars.feather")
         df_scalars = pd.read_feather(scalars_path)
-        original_batch_size = len(df_scalars)  # Store original size before any filtering
+        original_batch_size = len(
+            df_scalars
+        )  # Store original size before any filtering
 
         if df_scalars.empty:
             if verbose:
@@ -159,10 +169,10 @@ def _load_scalars_data(batch_dir_path: str, use_sliding_window: bool, verbose: b
 
 
 def _filter_samples_by_indices(
-    df_scalars: pd.DataFrame, 
-    sample_indices: np.ndarray | None, 
-    batch_start_idx: int, 
-    verbose: bool
+    df_scalars: pd.DataFrame,
+    sample_indices: np.ndarray | None,
+    batch_start_idx: int,
+    verbose: bool,
 ) -> pd.DataFrame | None:
     """
     Filter samples based on sample_indices if provided.
@@ -185,7 +195,7 @@ def _filter_samples_by_indices(
     """
     if sample_indices is None or df_scalars.empty:
         return df_scalars
-    
+
     batch_end_idx = batch_start_idx + len(df_scalars)
 
     # Find which global indices fall within this batch's range
@@ -208,7 +218,7 @@ def _filter_samples_by_indices(
 
     if verbose:
         print(f"  Filtered to {len(df_filtered)} samples from batch")
-    
+
     return df_filtered
 
 
@@ -263,8 +273,16 @@ def _load_and_calculate_sliding_window_metrics(
 
     # Handle CSR-based sliding window format
     return _handle_new_csr_sliding_window_metrics(
-        batch_dir_path, by, norm_order, sample_indices, batch_start_idx, 
-        original_batch_size, priors, eval_windows, adj_matrix, timing_info
+        batch_dir_path,
+        by,
+        norm_order,
+        sample_indices,
+        batch_start_idx,
+        original_batch_size,
+        priors,
+        eval_windows,
+        adj_matrix,
+        timing_info,
     )
 
 
@@ -285,7 +303,7 @@ def _handle_new_csr_sliding_window_metrics(
     """
     if priors is None:
         raise ValueError("priors is required for new CSR-based sliding window format")
-    
+
     # Parse metric type
     if "avg_window_cluster_" in by or "max_window_cluster_" in by:
         # Category 1: window-based metrics using all_clusters
@@ -295,7 +313,7 @@ def _handle_new_csr_sliding_window_metrics(
         else:
             aggregation_type = "max"
             remaining = by.replace("max_window_cluster_", "")
-        
+
         # Extract value type (size or llr)
         if remaining.startswith("size_norm_frac"):
             value_type = "size"
@@ -303,39 +321,46 @@ def _handle_new_csr_sliding_window_metrics(
             value_type = "llr"
         else:
             raise ValueError(f"Unknown value type in metric: {by}")
-        
+
         # Load all_clusters.npz
         start_file_load = time.perf_counter()
         all_clusters_path = os.path.join(batch_dir_path, "all_clusters.npz")
         all_clusters_csr = sparse.load_npz(all_clusters_path)
         timing_info["cluster_file_load_time"] = time.perf_counter() - start_file_load
-        
+
         # Filter samples if needed
         if sample_indices is not None:
             batch_end_idx = batch_start_idx + original_batch_size
-            mask = (sample_indices >= batch_start_idx) & (sample_indices < batch_end_idx)
+            mask = (sample_indices >= batch_start_idx) & (
+                sample_indices < batch_end_idx
+            )
             batch_sample_indices = sample_indices[mask]
             local_indices = batch_sample_indices - batch_start_idx
             all_clusters_csr = all_clusters_csr[local_indices, :]
-        
+
         # Calculate metrics
         start_calc = time.perf_counter()
-        norm_fractions = calculate_window_cluster_norm_fractions_from_csr(
-            all_clusters_csr, priors, norm_order, value_type, aggregation_type, eval_windows
+        norm_fractions = calculate_window_cluster_norm_fracs_from_csr(
+            all_clusters_csr,
+            priors,
+            norm_order,
+            value_type,
+            aggregation_type,
+            eval_windows,
         )
         timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
-        
+
         # Initialize arrays
         num_samples = len(norm_fractions)
         inside_cluster_size_norms = np.full(num_samples, np.nan, dtype=float)
         inside_cluster_llr_norms = np.full(num_samples, np.nan, dtype=float)
-        
+
         # Store results based on metric type
         if value_type == "size":
             inside_cluster_size_norms = norm_fractions
         else:  # llr
             inside_cluster_llr_norms = norm_fractions
-            
+
     elif "committed_cluster_" in by:
         # Category 2: committed cluster metrics using committed_clusters
         if "committed_cluster_size_norm_frac" in by:
@@ -344,48 +369,53 @@ def _handle_new_csr_sliding_window_metrics(
             value_type = "llr"
         else:
             raise ValueError(f"Unknown committed cluster metric: {by}")
-        
+
         if adj_matrix is None:
             raise ValueError("adj_matrix is required for committed cluster metrics")
-        
+
         # Load committed_clusters.npz
         start_file_load = time.perf_counter()
         committed_clusters_path = os.path.join(batch_dir_path, "committed_clusters.npz")
         committed_clusters_csr = sparse.load_npz(committed_clusters_path)
         timing_info["cluster_file_load_time"] = time.perf_counter() - start_file_load
-        
+
         # Filter samples if needed
         if sample_indices is not None:
             batch_end_idx = batch_start_idx + original_batch_size
-            mask = (sample_indices >= batch_start_idx) & (sample_indices < batch_end_idx)
+            mask = (sample_indices >= batch_start_idx) & (
+                sample_indices < batch_end_idx
+            )
             batch_sample_indices = sample_indices[mask]
             local_indices = batch_sample_indices - batch_start_idx
             committed_clusters_csr = committed_clusters_csr[local_indices, :]
-        
+
         # Calculate metrics
         start_calc = time.perf_counter()
         norm_fractions = calculate_committed_cluster_norm_fractions_from_csr(
-            committed_clusters_csr, priors, adj_matrix, norm_order, value_type, eval_windows
+            committed_clusters_csr,
+            priors,
+            adj_matrix,
+            norm_order,
+            value_type,
+            eval_windows,
         )
         timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
-        
+
         # Initialize arrays
         num_samples = len(norm_fractions)
         inside_cluster_size_norms = np.full(num_samples, np.nan, dtype=float)
         inside_cluster_llr_norms = np.full(num_samples, np.nan, dtype=float)
-        
+
         # Store results based on metric type
         if value_type == "size":
             inside_cluster_size_norms = norm_fractions
         else:  # llr
             inside_cluster_llr_norms = norm_fractions
-    
+
     else:
         raise ValueError(f"Unsupported new CSR sliding window metric: {by}")
-    
+
     return inside_cluster_size_norms, inside_cluster_llr_norms, timing_info
-
-
 
 
 def _load_and_calculate_legacy_metrics(
@@ -538,7 +568,7 @@ def _load_and_calculate_legacy_metrics(
                 sample_indices=local_sample_indices,
             )
         )
-        
+
         # Calculate norm at order=1 for denominator (number of faults)
         if norm_order == 1.0:
             inside_cluster_size_norms_1 = inside_cluster_size_norms
@@ -551,12 +581,14 @@ def _load_and_calculate_legacy_metrics(
                     sample_indices=local_sample_indices,
                 )
             )
-        
+
         # Calculate fractions: norm / (outside_value + inside_norm_1)
         cluster_metrics = np.full(num_samples, np.nan, dtype=float)
         denominators = outside_value + inside_cluster_size_norms_1
         valid_mask = denominators > 0
-        cluster_metrics[valid_mask] = inside_cluster_size_norms[valid_mask] / denominators[valid_mask]
+        cluster_metrics[valid_mask] = (
+            inside_cluster_size_norms[valid_mask] / denominators[valid_mask]
+        )
         timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
 
     elif by == "cluster_llr_norm_frac":
@@ -575,7 +607,7 @@ def _load_and_calculate_legacy_metrics(
                 sample_indices=local_sample_indices,
             )
         )
-        
+
         # Calculate norm at order=1 for denominator (summation of LLRs)
         if norm_order == 1.0:
             inside_cluster_llr_norms_1 = inside_cluster_llr_norms
@@ -588,18 +620,26 @@ def _load_and_calculate_legacy_metrics(
                     sample_indices=local_sample_indices,
                 )
             )
-        
+
         # Calculate fractions: norm / (outside_value + inside_norm_1)
         cluster_metrics = np.full(num_samples, np.nan, dtype=float)
         denominators = outside_value + inside_cluster_llr_norms_1
         valid_mask = denominators > 0
-        cluster_metrics[valid_mask] = inside_cluster_llr_norms[valid_mask] / denominators[valid_mask]
+        cluster_metrics[valid_mask] = (
+            inside_cluster_llr_norms[valid_mask] / denominators[valid_mask]
+        )
         timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
 
     else:
         raise ValueError(f"Unsupported method ({by}) for legacy data structure.")
 
-    return inside_cluster_size_norms, inside_cluster_llr_norms, cluster_metrics, outside_value, timing_info
+    return (
+        inside_cluster_size_norms,
+        inside_cluster_llr_norms,
+        cluster_metrics,
+        outside_value,
+        timing_info,
+    )
 
 
 def _calculate_average_cluster_metrics(
@@ -628,22 +668,18 @@ def _calculate_average_cluster_metrics(
         Array of calculated average cluster metrics.
     """
     # Calculate 2-norm
-    inside_cluster_2norms, _ = (
-        _calculate_cluster_norms_from_flat_data_numba(
-            flat_data=flat_data,
-            offsets=offsets,
-            norm_order=2.0,
-            sample_indices=local_sample_indices,
-        )
+    inside_cluster_2norms, _ = _calculate_cluster_norms_from_flat_data_numba(
+        flat_data=flat_data,
+        offsets=offsets,
+        norm_order=2.0,
+        sample_indices=local_sample_indices,
     )
     # Calculate 1-norm
-    inside_cluster_1norms, _ = (
-        _calculate_cluster_norms_from_flat_data_numba(
-            flat_data=flat_data,
-            offsets=offsets,
-            norm_order=1.0,
-            sample_indices=local_sample_indices,
-        )
+    inside_cluster_1norms, _ = _calculate_cluster_norms_from_flat_data_numba(
+        flat_data=flat_data,
+        offsets=offsets,
+        norm_order=1.0,
+        sample_indices=local_sample_indices,
     )
     # Calculate average: (2-norm)^2 / (1-norm)
     cluster_metrics = np.full(num_samples, np.nan, dtype=float)
@@ -651,7 +687,7 @@ def _calculate_average_cluster_metrics(
     cluster_metrics[valid_mask] = (
         inside_cluster_2norms[valid_mask] ** 2
     ) / inside_cluster_1norms[valid_mask]
-    
+
     return cluster_metrics
 
 
@@ -699,7 +735,7 @@ def _load_and_calculate_new_format_metrics(
     """
     # New format path
     clusters_path = os.path.join(batch_dir_path, "clusters.npz")
-    
+
     timing_info = {
         "cluster_file_load_time": 0.0,
         "cluster_calculation_time": 0.0,
@@ -731,7 +767,7 @@ def _load_and_calculate_new_format_metrics(
 
     # Calculate norms directly from CSR format using Numba
     start_calc = time.perf_counter()
-    
+
     if by in ["cluster_size_norm", "cluster_size_norm_gap"]:
         inside_cluster_size_norms, outside_size_values = (
             calculate_cluster_metrics_from_csr(
@@ -742,7 +778,7 @@ def _load_and_calculate_new_format_metrics(
             )
         )
         outside_values["size"] = outside_size_values
-        
+
     elif by in ["cluster_llr_norm", "cluster_llr_norm_gap"]:
         inside_cluster_llr_norms, outside_llr_values = (
             calculate_cluster_metrics_from_csr(
@@ -753,7 +789,7 @@ def _load_and_calculate_new_format_metrics(
             )
         )
         outside_values["llr"] = outside_llr_values
-        
+
     elif by in ["cluster_llr_residual_sum", "cluster_llr_residual_sum_gap"]:
         # For residual sum methods, calculate cluster_llr_norm with order=1
         inside_cluster_llr_norms, outside_llr_values = (
@@ -765,7 +801,7 @@ def _load_and_calculate_new_format_metrics(
             )
         )
         outside_values["llr"] = outside_llr_values
-        
+
     elif by == "average_cluster_size":
         # Calculate (2-norm)^2 / (1-norm) for cluster sizes
         # Calculate 2-norm
@@ -788,7 +824,7 @@ def _load_and_calculate_new_format_metrics(
         cluster_metrics[valid_mask] = (
             inside_cluster_2norms[valid_mask] ** 2
         ) / inside_cluster_1norms[valid_mask]
-        
+
     elif by == "average_cluster_llr":
         # Calculate (2-norm)^2 / (1-norm) for cluster LLRs
         # Calculate 2-norm
@@ -811,7 +847,7 @@ def _load_and_calculate_new_format_metrics(
         cluster_metrics[valid_mask] = (
             inside_cluster_2norms[valid_mask] ** 2
         ) / inside_cluster_1norms[valid_mask]
-        
+
     elif by == "cluster_size_norm_frac":
         # Calculate cluster_size_norm / (number of faults)
         inside_cluster_size_norms, _ = calculate_cluster_metrics_from_csr(
@@ -825,12 +861,12 @@ def _load_and_calculate_new_format_metrics(
         total_faults = clusters_csr.shape[1]  # Number of columns
         if total_faults > 0:
             cluster_metrics = inside_cluster_size_norms / total_faults
-        
+
     elif by == "cluster_llr_norm_frac":
         # Calculate cluster_llr_norm / (summation of LLRs)
         if priors is None:
             raise ValueError("priors is required for cluster_llr_norm_frac calculation")
-        
+
         inside_cluster_llr_norms, _ = calculate_cluster_metrics_from_csr(
             clusters=clusters_csr,
             method="llr_norm",
@@ -843,7 +879,7 @@ def _load_and_calculate_new_format_metrics(
         total_llr_sum = np.sum(bit_llrs)
         if total_llr_sum > 0:
             cluster_metrics = inside_cluster_llr_norms / total_llr_sum
-        
+
     else:
         cluster_metrics = calculate_cluster_metrics_from_csr(
             clusters=clusters_csr,
@@ -853,7 +889,13 @@ def _load_and_calculate_new_format_metrics(
 
     timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
 
-    return inside_cluster_size_norms, inside_cluster_llr_norms, cluster_metrics, outside_values, timing_info
+    return (
+        inside_cluster_size_norms,
+        inside_cluster_llr_norms,
+        cluster_metrics,
+        outside_values,
+        timing_info,
+    )
 
 
 def _create_aggregation_series(
@@ -902,8 +944,11 @@ def _create_aggregation_series(
     # Handle sliding window metrics
     if use_sliding_window:
         # Handle CSR-based sliding window format metrics
-        if ("avg_window_cluster_" in by or "max_window_cluster_" in by or 
-            "committed_cluster_" in by) and "_norm_frac" in by:
+        if (
+            "avg_window_cluster_" in by
+            or "max_window_cluster_" in by
+            or "committed_cluster_" in by
+        ) and "_norm_frac" in by:
             # CSR format: metrics are already calculated in the correct arrays
             if "size_norm_frac" in by:
                 return pd.Series(inside_cluster_size_norms, index=df_scalars.index)
@@ -913,10 +958,10 @@ def _create_aggregation_series(
     # Handle regular cluster methods
     elif by == "cluster_size_norm":
         return pd.Series(inside_cluster_size_norms, index=df_scalars.index)
-    
+
     elif by == "cluster_llr_norm":
         return pd.Series(inside_cluster_llr_norms, index=df_scalars.index)
-    
+
     elif by == "cluster_size_norm_gap":
         if use_new_format:
             return pd.Series(
@@ -927,7 +972,7 @@ def _create_aggregation_series(
             return pd.Series(
                 outside_value - inside_cluster_size_norms, index=df_scalars.index
             )
-    
+
     elif by == "cluster_llr_norm_gap":
         if use_new_format:
             return pd.Series(
@@ -938,7 +983,7 @@ def _create_aggregation_series(
             return pd.Series(
                 outside_value - inside_cluster_llr_norms, index=df_scalars.index
             )
-    
+
     elif by == "cluster_llr_residual_sum":
         # cluster_llr_norm (order=1) - pred_llr
         if "pred_llr" not in df_scalars.columns:
@@ -948,7 +993,7 @@ def _create_aggregation_series(
         pred_llr_values = df_scalars["pred_llr"].values
         cluster_llr_residual_sum_values = inside_cluster_llr_norms - pred_llr_values
         return pd.Series(cluster_llr_residual_sum_values, index=df_scalars.index)
-    
+
     elif by == "cluster_llr_residual_sum_gap":
         # outside_llr_value - cluster_llr_residual_sum
         if "pred_llr" not in df_scalars.columns:
@@ -967,14 +1012,19 @@ def _create_aggregation_series(
                 outside_value - cluster_llr_residual_sum_values,
                 index=df_scalars.index,
             )
-    
-    elif by in ["average_cluster_size", "average_cluster_llr", "cluster_size_norm_frac", "cluster_llr_norm_frac"]:
+
+    elif by in [
+        "average_cluster_size",
+        "average_cluster_llr",
+        "cluster_size_norm_frac",
+        "cluster_llr_norm_frac",
+    ]:
         return pd.Series(cluster_metrics, index=df_scalars.index)
-    
+
     elif "cluster" in by:
         # For other cluster methods, use cluster_metrics
         return pd.Series(cluster_metrics, index=df_scalars.index)
-    
+
     else:
         # 'by' is not a cluster-dependent method, try to get column directly
         if by in df_scalars.columns:
@@ -1043,7 +1093,7 @@ def get_values_for_binning_from_batch(
         "cluster_calculation_time": 0.0,
         "series_creation_time": 0.0,
     }
-    
+
     start_time = time.perf_counter()
 
     # 1. Detect data format
@@ -1090,13 +1140,22 @@ def get_values_for_binning_from_batch(
         if use_sliding_window_format:
             inside_cluster_size_norms, inside_cluster_llr_norms, sw_timing = (
                 _load_and_calculate_sliding_window_metrics(
-                    batch_dir_path, by, norm_order, sample_indices, 
-                    batch_start_idx, original_batch_size, priors, eval_windows, adj_matrix
+                    batch_dir_path,
+                    by,
+                    norm_order,
+                    sample_indices,
+                    batch_start_idx,
+                    original_batch_size,
+                    priors,
+                    eval_windows,
+                    adj_matrix,
                 )
             )
             # Update timing info
             timing_info["cluster_file_load_time"] += sw_timing["cluster_file_load_time"]
-            timing_info["cluster_calculation_time"] += sw_timing["cluster_calculation_time"]
+            timing_info["cluster_calculation_time"] += sw_timing[
+                "cluster_calculation_time"
+            ]
 
         elif use_legacy_format:
             # Get local sample indices for this batch if filtering is needed
@@ -1105,7 +1164,9 @@ def get_values_for_binning_from_batch(
                 scalars_path = os.path.join(batch_dir_path, "scalars.feather")
                 original_scalars = pd.read_feather(scalars_path)
                 batch_end_idx = batch_start_idx + len(original_scalars)
-                mask = (sample_indices >= batch_start_idx) & (sample_indices < batch_end_idx)
+                mask = (sample_indices >= batch_start_idx) & (
+                    sample_indices < batch_end_idx
+                )
                 batch_sample_indices = sample_indices[mask]
                 local_sample_indices = batch_sample_indices - batch_start_idx
 
@@ -1119,8 +1180,12 @@ def get_values_for_binning_from_batch(
                 batch_dir_path, by, norm_order, local_sample_indices, num_samples
             )
             # Update timing info
-            timing_info["cluster_file_load_time"] += legacy_timing["cluster_file_load_time"]
-            timing_info["cluster_calculation_time"] += legacy_timing["cluster_calculation_time"]
+            timing_info["cluster_file_load_time"] += legacy_timing[
+                "cluster_file_load_time"
+            ]
+            timing_info["cluster_calculation_time"] += legacy_timing[
+                "cluster_calculation_time"
+            ]
 
         elif use_new_format:
             (
@@ -1130,12 +1195,21 @@ def get_values_for_binning_from_batch(
                 outside_values,
                 new_timing,
             ) = _load_and_calculate_new_format_metrics(
-                batch_dir_path, by, norm_order, priors, sample_indices, 
-                batch_start_idx, df_scalars
+                batch_dir_path,
+                by,
+                norm_order,
+                priors,
+                sample_indices,
+                batch_start_idx,
+                df_scalars,
             )
             # Update timing info
-            timing_info["cluster_file_load_time"] += new_timing["cluster_file_load_time"]
-            timing_info["cluster_calculation_time"] += new_timing["cluster_calculation_time"]
+            timing_info["cluster_file_load_time"] += new_timing[
+                "cluster_file_load_time"
+            ]
+            timing_info["cluster_calculation_time"] += new_timing[
+                "cluster_calculation_time"
+            ]
 
         timing_info["cluster_file_load_time"] += (
             time.perf_counter()
@@ -1156,7 +1230,9 @@ def get_values_for_binning_from_batch(
             outside_value,
             outside_values,
         )
-        timing_info["series_creation_time"] = time.perf_counter() - start_series_creation
+        timing_info["series_creation_time"] = (
+            time.perf_counter() - start_series_creation
+        )
 
     else:
         # 'by' is not a cluster-dependent method, try to get column directly
@@ -1164,7 +1240,11 @@ def get_values_for_binning_from_batch(
         if by in df_scalars.columns:
             series_to_bin = df_scalars[by].copy()
         else:
-            raise ValueError(f"Column '{by}' not found in scalars.feather for {batch_dir_path}.")
-        timing_info["series_creation_time"] = time.perf_counter() - start_series_creation
+            raise ValueError(
+                f"Column '{by}' not found in scalars.feather for {batch_dir_path}."
+            )
+        timing_info["series_creation_time"] = (
+            time.perf_counter() - start_series_creation
+        )
 
     return series_to_bin, df_scalars, original_batch_size, timing_info

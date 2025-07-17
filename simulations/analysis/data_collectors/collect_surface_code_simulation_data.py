@@ -9,20 +9,20 @@ from simulations.analysis.data_collectors.data_collection import (
 
 if __name__ == "__main__":
     ascending_confidences = {
-        "pred_llr": False,
-        "detector_density": False,
+        # "pred_llr": False,
+        # "detector_density": False,
         "cluster_llr_norm_frac": False,
-        "cluster_size_norm_frac": False,
+        # "cluster_size_norm_frac": False,
     }
 
     ascending_confidences_matching = {
         "gap": True,
     }
 
-    orders = [0.5, 1, 2, np.inf]
-    # orders = [2]
+    # orders = [0.5, 1, 2, np.inf]
+    orders = [2]
 
-    use_old_format_data = True
+    use_old_format_data = False
 
     if use_old_format_data:
         data_dir_name = "surface_minsum_iter30_lsd0"
