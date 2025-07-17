@@ -385,6 +385,7 @@ def bplsd_sliding_window_simulation_task_single(
     np.ndarray,
     sparse.csr_array,
     sparse.csr_array,
+    List[np.ndarray] | None,
 ]:
     """
     Run a single sliding window simulation task for a given circuit and decoder parameters.
@@ -412,6 +413,9 @@ def bplsd_sliding_window_simulation_task_single(
     committed_clusters_csr : scipy.sparse.csr_array
         2D boolean CSR array containing committed cluster information for all shots in this task.
         Each row corresponds to one shot.
+    committed_faults : list of numpy arrays or None
+        List of boolean arrays representing committed faults for each window.
+        Only returned from the first shot (since it's deterministic), None for all other shots.
     """
     if decoder_prms is None:
         decoder_prms = {}
@@ -425,10 +429,11 @@ def bplsd_sliding_window_simulation_task_single(
     fails_list = []
     all_clusters_list = []  # For CSR arrays
     committed_clusters_list = []  # For CSR arrays
+    committed_faults = None  # Only extract once from first shot
     
     max_cluster_idx = 0
     
-    for _ in range(shots):
+    for shot_idx in range(shots):
         # Use simulate_single with sliding window
         fail, soft_outputs = decoder.simulate_single(
             sliding_window=True,
@@ -440,6 +445,10 @@ def bplsd_sliding_window_simulation_task_single(
         # Extract all_clusters and committed_clusters
         all_clusters = soft_outputs["all_clusters"]  # List of numpy arrays (int)
         committed_clusters = soft_outputs["committed_clusters"]  # List of numpy arrays (bool)
+        
+        # Extract committed_faults only from first shot (since it's deterministic)
+        if shot_idx == 0:
+            committed_faults = soft_outputs["committed_faults"]  # List of numpy arrays (bool)
         
         # Concatenate all windows' clusters into a single array for this shot
         all_clusters_concat = np.concatenate(all_clusters) if all_clusters else np.array([], dtype=int)
@@ -465,6 +474,7 @@ def bplsd_sliding_window_simulation_task_single(
         fails_arr,
         all_clusters_csr,
         committed_clusters_csr,
+        committed_faults,
     )
 
 
@@ -480,6 +490,7 @@ def bplsd_sliding_window_simulation_task_parallel(
     np.ndarray,
     sparse.csr_array,
     sparse.csr_array,
+    List[np.ndarray] | None,
 ]:
     """
     Run sliding window simulations in parallel and return results.
@@ -511,6 +522,9 @@ def bplsd_sliding_window_simulation_task_parallel(
     committed_clusters_csr : scipy.sparse.csr_array
         2D boolean CSR array containing committed cluster information for all samples.
         Each row corresponds to one sample.
+    committed_faults : list of numpy arrays or None
+        List of boolean arrays representing committed faults for each window.
+        Only returned from the first parallel job (since it's deterministic), None otherwise.
     """
     if shots == 0:
         raise ValueError("Total number of shots to simulate must be greater than 0.")
@@ -538,10 +552,18 @@ def bplsd_sliding_window_simulation_task_parallel(
         fails_l,
         all_clusters_csr_l,
         committed_clusters_csr_l,
+        committed_faults_l,
     ) = zip(*results)
 
     # Combine fails into single array
     fails = np.concatenate(fails_l)
+
+    # Extract committed_faults from the first job that has it (since it's deterministic)
+    committed_faults = None
+    for committed_faults_item in committed_faults_l:
+        if committed_faults_item is not None:
+            committed_faults = committed_faults_item
+            break
 
     # Concatenate CSR arrays from all tasks
     all_clusters_csr = sparse.vstack(all_clusters_csr_l, format="csr")
@@ -551,6 +573,7 @@ def bplsd_sliding_window_simulation_task_parallel(
         fails,
         all_clusters_csr,
         committed_clusters_csr,
+        committed_faults,
     )
 
 

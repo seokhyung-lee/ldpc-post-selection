@@ -90,6 +90,10 @@ def simulate(
         decoder = SoftOutputsBpLsdDecoder(circuit=circuit)
         np.save(prior_path, decoder.priors)
 
+    # Save committed_faults if not exists (deterministic for this configuration)
+    committed_faults_path = os.path.join(sub_data_dir, "committed_faults.npz")
+    committed_faults_saved = os.path.exists(committed_faults_path)
+
     # Determine the next file index
     next_idx = (
         max([info[0] for info in existing_files_info], default=0) + 1
@@ -117,6 +121,7 @@ def simulate(
             fails,
             all_clusters_csr,
             committed_clusters_csr,
+            committed_faults,
         ) = bplsd_sliding_window_simulation_task_parallel(
             shots=to_run,
             circuit=circuit,
@@ -126,6 +131,11 @@ def simulate(
             repeat=repeat,
             decoder_prms=decoder_prms,
         )
+
+        # Save committed_faults if not saved yet and available from this batch
+        if not committed_faults_saved and committed_faults is not None:
+            np.savez_compressed(committed_faults_path, *committed_faults)
+            committed_faults_saved = True
 
         # Prepare filenames for this batch
         fp_fails = os.path.join(batch_output_dir, "fails.npy")
