@@ -6,6 +6,8 @@ from simulations.analysis.data_collectors.data_collection import (
     DATA_DIR,
 )
 
+# TODO: Implementing real-time post-selection
+
 
 if __name__ == "__main__":
     # Define sliding window specific metrics
@@ -13,7 +15,7 @@ if __name__ == "__main__":
     ascending_confidences = {}
 
     # Define aggregation types and their confidence directions
-    aggregation_types = ["mean", "max", "committed"]
+    aggregation_types = ["avg_window", "max_window", "committed"]
     value_types = ["size", "llr"]
 
     # For cluster metrics, higher values typically mean lower confidence
@@ -23,10 +25,10 @@ if __name__ == "__main__":
             ascending_confidences[metric_base] = False
 
     # Define norm orders to calculate
-    orders = [1, 2, np.inf]  # Can be extended to [0.5, 1, 2, np.inf]
+    orders = [2]  # Can be extended to [0.5, 1, 2, np.inf]
 
     # Data directory configuration
-    data_dir_name = "bb_sliding_window_minsum_iter30_lsd0"
+    data_dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
     dataset_name = "bb_sliding_window"
 
     data_dir = str(DATA_DIR / data_dir_name)
@@ -36,7 +38,7 @@ if __name__ == "__main__":
     process_dataset(
         data_dir=data_dir,
         dataset_name=dataset_name,
-        dataset_type="bb",  # Use same type as regular BB codes
+        dataset_type="bb",
         ascending_confidences=ascending_confidences,
         orders=orders,
         decimals=4,

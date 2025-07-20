@@ -12,13 +12,13 @@ from simulations.utils.simulation_utils import (
     get_existing_shots,
     bplsd_sliding_window_simulation_task_parallel,
 )
-from simulations.utils.build_circuit import build_BB_circuit, get_BB_distance
+from simulations.utils.build_circuit import build_surface_code_circuit
 
 
 def simulate(
     shots: int,
     p: float,
-    n: int,
+    d: int,
     T: int,
     window_size: int,
     commit_size: int,
@@ -27,9 +27,10 @@ def simulate(
     repeat: int,
     shots_per_batch: int = 1_000_000,
     decoder_prms: Dict[str, Any] | None = None,
+    noise_model: str = "circuit-level",
 ) -> None:
     """
-    Run sliding window simulation for a given (p, n, T) configuration, saving results in batches.
+    Run sliding window simulation for a given (p, d, T) configuration, saving results in batches.
     Results include numpy array for fails and CSR sparse matrices for cluster information.
 
     Parameters
@@ -38,8 +39,8 @@ def simulate(
         Total number of shots to simulate for this configuration.
     p : float
         Physical error probability.
-    n : int
-        Number of qubits.
+    d : int
+        Code distance.
     T : int
         Number of rounds.
     window_size : int
@@ -56,6 +57,8 @@ def simulate(
         Number of shots to simulate and save per batch file.
     decoder_prms : Dict[str, Any], optional
         Parameters for the SoftOutputsBpLsdDecoder.
+    noise_model : str, default="circuit-level"
+        The noise model type: ["circuit-level", "code-capacity", "phenom"].
 
     Returns
     -------
@@ -63,7 +66,7 @@ def simulate(
         This function writes results to files and prints status messages.
     """
     # Create subdirectory path based on parameters
-    sub_dirname = f"n{n}_T{T}_p{p}_W{window_size}_F{commit_size}"
+    sub_dirname = f"d{d}_T{T}_p{p}_W{window_size}_F{commit_size}"
     sub_data_dir = os.path.join(data_dir, sub_dirname)
     os.makedirs(sub_data_dir, exist_ok=True)
 
@@ -72,17 +75,19 @@ def simulate(
 
     if total_existing >= shots:
         print(
-            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, n={n}, T={T}, W={window_size}, F={commit_size} in {sub_dirname}."
+            f"\n[SKIP] Already have {total_existing} shots (>= {shots}). Skipping p={p}, d={d}, T={T}, W={window_size}, F={commit_size} in {sub_dirname}."
         )
         return
 
     remaining = shots - total_existing
     print(
-        f"\nNeed to simulate {remaining} more shots for p={p}, n={n}, T={T}, W={window_size}, F={commit_size} into {sub_dirname}"
+        f"\nNeed to simulate {remaining} more shots for p={p}, d={d}, T={T}, W={window_size}, F={commit_size} into {sub_dirname}"
     )
 
-    # Create the circuit once for this (p, n, T) configuration
-    circuit = build_BB_circuit(p=p, n=n, T=T)
+    # Create the circuit once for this (p, d, T) configuration
+    circuit = build_surface_code_circuit(
+        p=p, d=d, T=T, noise=noise_model, only_z_detectors=True
+    )
 
     # Save H & prior probabilities if not exists
     prior_path = os.path.join(sub_data_dir, "priors.npy")
@@ -115,7 +120,7 @@ def simulate(
 
         t0_batch = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, n={n}, T={T}, W={window_size}, F={commit_size}. Output to: {batch_output_dir}"
+            f"\n[{t0_batch}] Simulating {to_run} shots for p={p}, d={d}, T={T}, W={window_size}, F={commit_size}. Output to: {batch_output_dir}"
         )
 
         # Run sliding window simulation
@@ -173,17 +178,19 @@ if __name__ == "__main__":
     )
 
     plist = [3e-3]
-    nlist = [144]  # [72, 108, 144, 288]
+    dlist = [9]  # [7, 9, 11, 13]
 
     # Sliding window parameters
     window_size = 3
     commit_size = 1
 
+    noise_model = "circuit-level"
+
     shots_per_batch = round(5e6)
     total_shots = round(1e8)
     n_jobs = 18
     repeat = 10
-    dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
+    dir_name = "surface_sliding_window_minsum_iter30_lsd0_raw"
 
     decoder_prms = {
         "max_iter": 30,
@@ -196,21 +203,21 @@ if __name__ == "__main__":
     data_dir = os.path.join(current_dir, f"data/{dir_name}")
     os.makedirs(data_dir, exist_ok=True)
 
-    print("nlist =", nlist)
+    print("dlist =", dlist)
     print("plist =", plist)
     print("window_size =", window_size)
     print("commit_size =", commit_size)
     print("decoder_prms =", decoder_prms)
 
     print(f"\n==== Starting sliding window simulations up to {total_shots} shots ====")
-    for n in nlist:
-        T = get_BB_distance(n)
+    for d in dlist:
+        T = d
 
         for i_p, p in enumerate(plist):
             simulate(
                 shots=total_shots,
                 p=p,
-                n=n,
+                d=d,
                 T=T,
                 window_size=window_size,
                 commit_size=commit_size,
@@ -219,6 +226,7 @@ if __name__ == "__main__":
                 repeat=repeat,
                 shots_per_batch=shots_per_batch,
                 decoder_prms=decoder_prms,
+                noise_model=noise_model,
             )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

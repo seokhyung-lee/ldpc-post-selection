@@ -20,7 +20,7 @@ pip install -e .
 
 ## Package Structure
 
-The project is configured as two Python packages:
+The project is configured as two Python packages, which are already installed:
 - `ldpc_post_selection`: Core decoder implementations (`src/ldpc_post_selection/`)
 - `simulations`: Simulation framework and analysis tools (`simulations/`)
 
@@ -31,12 +31,6 @@ from simulations.utils.simulation_utils import bplsd_simulation_task_parallel
 ```
 
 For non-executable library code, relative imports are acceptable.
-
-## Importing Guidelines
-
-- `'simulations/'` and `'src/ldpc_post_selection/'` are currently installed as python packages "simulations" and "ldpc_post_selection"
-- Use package names when importing codes for executable scripts
-- For non-executable codes, using relative importing is fine
 
 ## Core Architecture
 
@@ -59,29 +53,10 @@ For non-executable library code, relative imports are acceptable.
 
 ## Development Commands
 
-### Testing
-```bash
-# Run main decoder tests
-python -m pytest tests/test_decoder.py
-
-# Run simulation utility tests  
-python -m pytest simulations/tests/
-
-# Run analysis tests
-python -m pytest simulations/analysis/tests/
-```
-
-### Running Simulations
-Simulations are typically executed as Python scripts with command-line arguments:
-```bash
-# Example surface code simulation
-python simulations/surface_code_simulation.py
-```
-
 ### Analysis Workflows
-1. **Data Collection**: Run parallel simulations using code-specific collectors in `simulations/analysis/data_collectors/`
-2. **Data Aggregation**: Use `data_aggregation.py` to combine results across parameter sweeps
-3. **Analysis**: Open Jupyter notebooks in `simulations/analysis/notebooks/` for visualization and statistical analysis
+1. **Data Collection**: Run parallel simulations using simulation scripts in `simulations/`.
+2. **Data Aggregation**: Use code-specific scripts in `simulations/analysis/data_collectors/` for aggregating saved data.
+3. **Analysis**: Use Jupyter notebooks in `simulations/analysis/notebooks/` for visualization and statistical analysis.
 
 ## Key Architectural Patterns
 
