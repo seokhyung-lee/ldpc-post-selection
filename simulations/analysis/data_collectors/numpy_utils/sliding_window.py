@@ -160,6 +160,142 @@ def _numba_window_norm_fracs_kernel(
     return norm_fractions
 
 
+@numba.njit(fastmath=True, cache=True)
+def _calculate_size_norm_fraction_numba(
+    cluster_labels: np.ndarray, norm_order: float
+) -> float:
+    """
+    Calculate norm fraction for cluster sizes using numba for maximum performance.
+
+    Parameters
+    ----------
+    cluster_labels : 1D numpy array of int
+        Cluster labels for committed faults (all values > 0).
+    norm_order : float
+        Order for L_p norm calculation.
+
+    Returns
+    -------
+    norm_value : float
+        Norm of cluster sizes.
+    """
+    if len(cluster_labels) == 0:
+        return 0.0
+
+    # Find maximum cluster ID to determine array size
+    max_cluster_id = 0
+    for i in range(len(cluster_labels)):
+        if cluster_labels[i] > max_cluster_id:
+            max_cluster_id = cluster_labels[i]
+
+    if max_cluster_id == 0:
+        return 0.0
+
+    # Count cluster sizes manually
+    cluster_sizes = np.zeros(max_cluster_id + 1, dtype=np.float64)
+    for i in range(len(cluster_labels)):
+        cluster_id = cluster_labels[i]
+        if cluster_id > 0:
+            cluster_sizes[cluster_id] += 1.0
+
+    # Calculate norm of cluster sizes
+    norm_val = 0.0
+    if norm_order == 1.0:
+        for cid in range(1, max_cluster_id + 1):
+            norm_val += cluster_sizes[cid]
+    elif norm_order == 2.0:
+        sum_sq = 0.0
+        for cid in range(1, max_cluster_id + 1):
+            v = cluster_sizes[cid]
+            if v > 0:
+                sum_sq += v * v
+        norm_val = np.sqrt(sum_sq)
+    elif np.isinf(norm_order):
+        for cid in range(1, max_cluster_id + 1):
+            v = cluster_sizes[cid]
+            if v > norm_val:
+                norm_val = v
+    else:
+        sum_pow = 0.0
+        for cid in range(1, max_cluster_id + 1):
+            v = cluster_sizes[cid]
+            if v > 0:
+                sum_pow += v**norm_order
+        norm_val = sum_pow ** (1.0 / norm_order)
+
+    return norm_val
+
+
+@numba.njit(fastmath=True, cache=True)
+def _calculate_llr_norm_fraction_numba(
+    cluster_labels: np.ndarray, llr_values: np.ndarray, norm_order: float
+) -> float:
+    """
+    Calculate norm fraction for cluster LLR sums using numba for maximum performance.
+
+    Parameters
+    ----------
+    cluster_labels : 1D numpy array of int
+        Cluster labels for committed faults (all values > 0).
+    llr_values : 1D numpy array of float
+        LLR values corresponding to each committed fault.
+    norm_order : float
+        Order for L_p norm calculation.
+
+    Returns
+    -------
+    norm_value : float
+        Norm of cluster LLR sums.
+    """
+    if len(cluster_labels) == 0 or len(llr_values) == 0:
+        return 0.0
+
+    if len(cluster_labels) != len(llr_values):
+        return 0.0  # Invalid input
+
+    # Find maximum cluster ID to determine array size
+    max_cluster_id = 0
+    for i in range(len(cluster_labels)):
+        if cluster_labels[i] > max_cluster_id:
+            max_cluster_id = cluster_labels[i]
+
+    if max_cluster_id == 0:
+        return 0.0
+
+    # Sum LLR values by cluster manually
+    cluster_llr_sums = np.zeros(max_cluster_id + 1, dtype=np.float64)
+    for i in range(len(cluster_labels)):
+        cluster_id = cluster_labels[i]
+        if cluster_id > 0:
+            cluster_llr_sums[cluster_id] += llr_values[i]
+
+    # Calculate norm of cluster LLR sums
+    norm_val = 0.0
+    if norm_order == 1.0:
+        for cid in range(1, max_cluster_id + 1):
+            norm_val += abs(cluster_llr_sums[cid])
+    elif norm_order == 2.0:
+        sum_sq = 0.0
+        for cid in range(1, max_cluster_id + 1):
+            v = cluster_llr_sums[cid]
+            sum_sq += v * v
+        norm_val = np.sqrt(sum_sq)
+    elif np.isinf(norm_order):
+        for cid in range(1, max_cluster_id + 1):
+            v = abs(cluster_llr_sums[cid])
+            if v > norm_val:
+                norm_val = v
+    else:
+        sum_pow = 0.0
+        for cid in range(1, max_cluster_id + 1):
+            v = abs(cluster_llr_sums[cid])
+            if v > 0:
+                sum_pow += v**norm_order
+        norm_val = sum_pow ** (1.0 / norm_order)
+
+    return norm_val
+
+
 def calculate_window_cluster_norm_fracs_from_csr(
     all_clusters_csr: csr_matrix,
     priors: np.ndarray,
@@ -330,7 +466,7 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     """
     Optimized calculation of committed cluster norm fractions from CSR matrix.
 
-    This function uses optimized window splitting, logical OR operations, and 
+    This function uses optimized window splitting, logical OR operations, and
     igraph-based connected components analysis for maximum performance.
 
     Parameters
@@ -364,10 +500,14 @@ def calculate_committed_cluster_norm_fractions_from_csr(
 
     if _benchmarking:
         start_time = time.perf_counter()
-        print(f"=== BENCHMARKING: calculate_committed_cluster_norm_fractions_from_csr ===")
-        print(f"Input: num_samples={committed_clusters_csr.shape[0]}, "
-              f"num_cols={committed_clusters_csr.shape[1]}, "
-              f"value_type={value_type}, norm_order={norm_order}")
+        print(
+            f"=== BENCHMARKING: calculate_committed_cluster_norm_fractions_from_csr ==="
+        )
+        print(
+            f"Input: num_samples={committed_clusters_csr.shape[0]}, "
+            f"num_cols={committed_clusters_csr.shape[1]}, "
+            f"value_type={value_type}, norm_order={norm_order}"
+        )
 
     num_faults = len(priors)
     num_samples = committed_clusters_csr.shape[0]
@@ -375,11 +515,11 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     # Split CSR matrix by windows
     if _benchmarking:
         split_start = time.perf_counter()
-        
+
     window_matrices = _split_csr_by_windows(
         committed_clusters_csr, num_faults, eval_windows
     )
-    
+
     if _benchmarking:
         split_time = time.perf_counter() - split_start
         print(f"Window splitting time: {split_time:.4f}s")
@@ -391,25 +531,25 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     # shape: (num_samples, num_faults)
     if _benchmarking:
         or_start = time.perf_counter()
-        
+
     combined_committed = _compute_logical_or_across_windows(window_matrices)
-    
+
     if _benchmarking:
         or_time = time.perf_counter() - or_start
         print(f"Logical OR operations time: {or_time:.4f}s")
-    
+
     # Process committed_faults to get total committed region
     # Determine which windows to consider based on eval_windows
     if _benchmarking:
         faults_start = time.perf_counter()
-        
+
     if eval_windows is not None:
         start_window = max(0, eval_windows[0])
         end_window = min(len(committed_faults), eval_windows[1] + 1)
         selected_committed_faults = committed_faults[start_window:end_window]
     else:
         selected_committed_faults = committed_faults
-    
+
     # Combine committed faults across windows using logical OR
     if selected_committed_faults:
         combined_committed_faults = np.logical_or.reduce(selected_committed_faults)
@@ -424,33 +564,46 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     if _benchmarking:
         graph_creation_start = time.perf_counter()
         print("Creating full igraph Graph using efficient CSR → COO conversion...")
-    
+
     # Use efficient CSR → COO → igraph conversion as suggested
-    if hasattr(adj_matrix, 'tocoo'):
+    if hasattr(adj_matrix, "tocoo"):
         # It's already a sparse matrix
         coo = adj_matrix.tocoo()
     else:
         # Convert dense matrix to sparse COO format first
         coo = sp.coo_matrix(adj_matrix)
-    
+
     # Create igraph using the efficient method: CSR → COO → igraph
     full_graph = ig.Graph(n=coo.shape[0], directed=False)
     full_graph.add_edges(zip(coo.row, coo.col))
-    
+
     if _benchmarking:
         graph_creation_time = time.perf_counter() - graph_creation_start
         print(f"Graph creation time: {graph_creation_time:.4f}s")
-        print(f"Created graph with {full_graph.vcount()} vertices and {full_graph.ecount()} edges")
+        print(
+            f"Created graph with {full_graph.vcount()} vertices and {full_graph.ecount()} edges"
+        )
+
+    # Pre-compute commonly used values for performance
+    if value_type == "llr":
+        bit_llrs = np.log((1 - priors) / priors)
+        total_llr_sum = np.sum(bit_llrs[combined_committed_faults])
+    else:
+        bit_llrs = None
+        total_llr_sum = 0.0
+    
+    # Pre-compute total committed faults for size calculations
+    total_committed_faults = np.sum(combined_committed_faults)
 
     # Process each sample to convert boolean matrix to labeled clusters
     norm_fractions = np.zeros(num_samples, dtype=float)
-    
+
     if _benchmarking:
         loop_start = time.perf_counter()
         loop_times = {
-            'nonzero_ops': 0.0,
-            'cluster_labeling': 0.0,
-            'norm_calculations': 0.0
+            "nonzero_ops": 0.0,
+            "cluster_labeling": 0.0,
+            "norm_calculations": 0.0,
         }
         print(f"Starting main sample processing loop for {num_samples} samples...")
 
@@ -458,11 +611,14 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         # Find indices of committed faults for this sample directly from sparse matrix
         if _benchmarking:
             nonzero_start = time.perf_counter()
-            
-        committed_cluster_fault_indices = combined_committed[sample_idx].nonzero()[0]
-        
+
+        row_start = combined_committed.indptr[sample_idx]
+        row_end = combined_committed.indptr[sample_idx + 1]
+
+        committed_cluster_fault_indices = combined_committed.indices[row_start:row_end]
+
         if _benchmarking:
-            loop_times['nonzero_ops'] += time.perf_counter() - nonzero_start
+            loop_times["nonzero_ops"] += time.perf_counter() - nonzero_start
 
         if len(committed_cluster_fault_indices) == 0:
             # No committed clusters, norm fraction is 0
@@ -472,12 +628,14 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         # Label clusters using the adjacency matrix
         if _benchmarking:
             cluster_start = time.perf_counter()
-            
+
         # Use optimized igraph implementation for connected components analysis
-        cluster_labels = label_clusters_igraph(full_graph, committed_cluster_fault_indices)
-        
+        cluster_labels = label_clusters_igraph(
+            full_graph, committed_cluster_fault_indices
+        )
+
         if _benchmarking:
-            loop_times['cluster_labeling'] += time.perf_counter() - cluster_start
+            loop_times["cluster_labeling"] += time.perf_counter() - cluster_start
 
         # Extract cluster labels for committed faults only
         nonzero_cluster_labels = cluster_labels[committed_cluster_fault_indices]
@@ -485,91 +643,51 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         # Calculate norm fractions based on cluster labels
         if _benchmarking:
             norm_start = time.perf_counter()
-            
+
         if value_type == "size":
-            # Calculate cluster sizes and total
-            unique_clusters, cluster_sizes = np.unique(
-                nonzero_cluster_labels,  # all > 0
-                return_counts=True,
+            # Use optimized numba kernel for size norm calculation
+            inside_norm = _calculate_size_norm_fraction_numba(nonzero_cluster_labels, norm_order)
+            norm_fractions[sample_idx] = (
+                inside_norm / total_committed_faults
+                if total_committed_faults > 0
+                else 0.0
             )
-
-            if len(cluster_sizes) > 0:
-                # Calculate norm of cluster sizes
-                if norm_order == 1.0:
-                    inside_norm = np.sum(cluster_sizes)
-                elif norm_order == 2.0:
-                    inside_norm = np.sqrt(np.sum(cluster_sizes**2))
-                elif np.isinf(norm_order):
-                    inside_norm = np.max(cluster_sizes)
-                else:
-                    inside_norm = np.sum(cluster_sizes**norm_order) ** (
-                        1.0 / norm_order
-                    )
-
-                # Total number of committed faults
-                total_committed_faults = np.sum(combined_committed_faults)
-                norm_fractions[sample_idx] = inside_norm / total_committed_faults if total_committed_faults > 0 else 0.0
-            else:
-                norm_fractions[sample_idx] = 0.0
 
         elif value_type == "llr":
-            # Calculate cluster LLR sums and total
-            bit_llrs = np.log((1 - priors) / priors)
-
-            # Group LLRs by cluster
-            unique_clusters, inverse_indices = np.unique(
-                nonzero_cluster_labels,
-                return_inverse=True,
+            # Use optimized numba kernel for LLR norm calculation
+            llr_values_for_committed = bit_llrs[committed_cluster_fault_indices]
+            inside_norm = _calculate_llr_norm_fraction_numba(
+                nonzero_cluster_labels, llr_values_for_committed, norm_order
             )
-
-            if len(unique_clusters) > 0:
-                # Calculate LLR sum for each cluster
-                cluster_llr_sums = np.bincount(
-                    inverse_indices,
-                    weights=bit_llrs[
-                        committed_cluster_fault_indices
-                    ],
-                )
-
-                # Calculate norm of cluster LLR sums
-                if norm_order == 1.0:
-                    inside_norm = np.sum(np.abs(cluster_llr_sums))
-                elif norm_order == 2.0:
-                    inside_norm = np.sqrt(np.sum(cluster_llr_sums**2))
-                elif np.isinf(norm_order):
-                    inside_norm = np.max(np.abs(cluster_llr_sums))
-                else:
-                    inside_norm = np.sum(np.abs(cluster_llr_sums) ** norm_order) ** (
-                        1.0 / norm_order
-                    )
-
-                # Total LLR sum for all committed faults
-                total_llr_sum = np.sum(bit_llrs[combined_committed_faults])
-                norm_fractions[sample_idx] = (
-                    inside_norm / total_llr_sum if total_llr_sum > 0 else 0.0
-                )
-            else:
-                norm_fractions[sample_idx] = 0.0
+            norm_fractions[sample_idx] = (
+                inside_norm / total_llr_sum if total_llr_sum > 0 else 0.0
+            )
 
         else:
             raise ValueError(
                 f"Unknown value_type: {value_type}. Must be 'size' or 'llr'."
             )
-            
+
         if _benchmarking:
-            loop_times['norm_calculations'] += time.perf_counter() - norm_start
+            loop_times["norm_calculations"] += time.perf_counter() - norm_start
 
     if _benchmarking:
         loop_total_time = time.perf_counter() - loop_start
         total_time = time.perf_counter() - start_time
-        
+
         print(f"Main loop total time: {loop_total_time:.4f}s")
-        print(f"  - Nonzero operations: {loop_times['nonzero_ops']:.4f}s "
-              f"({loop_times['nonzero_ops']/loop_total_time*100:.1f}%)")
-        print(f"  - Cluster labeling: {loop_times['cluster_labeling']:.4f}s "
-              f"({loop_times['cluster_labeling']/loop_total_time*100:.1f}%)")
-        print(f"  - Norm calculations: {loop_times['norm_calculations']:.4f}s "
-              f"({loop_times['norm_calculations']/loop_total_time*100:.1f}%)")
+        print(
+            f"  - Nonzero operations: {loop_times['nonzero_ops']:.4f}s "
+            f"({loop_times['nonzero_ops']/loop_total_time*100:.1f}%)"
+        )
+        print(
+            f"  - Cluster labeling: {loop_times['cluster_labeling']:.4f}s "
+            f"({loop_times['cluster_labeling']/loop_total_time*100:.1f}%)"
+        )
+        print(
+            f"  - Norm calculations: {loop_times['norm_calculations']:.4f}s "
+            f"({loop_times['norm_calculations']/loop_total_time*100:.1f}%)"
+        )
         print(f"Total function time: {total_time:.4f}s")
         print("=" * 60)
 
