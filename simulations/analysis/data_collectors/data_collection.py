@@ -150,7 +150,7 @@ def process_single_subdirectory(
     """
     Process a single subdirectory for data aggregation and post-selection.
 
-    For committed cluster metrics, automatically loads the check matrix H from H.npz 
+    For committed cluster metrics, automatically loads the check matrix H from H.npz
     and computes the adjacency matrix using adj_matrix = (H.T @ H == 1).astype(bool).
 
     Parameters
@@ -201,97 +201,78 @@ def process_single_subdirectory(
         print(f"\nProcessing subdirectory: {param_combo_str}")
         print(f"  Path: {subdir_path}")
 
+    # Load existing aggregated data if available
+    existing_df_agg = load_existing_df(
+        dataset_name, method_name, param_combo_str, "aggregated"
+    )
+
+    # Load priors
     try:
-        # Load existing aggregated data if available
-        existing_df_agg = load_existing_df(
-            dataset_name, method_name, param_combo_str, "aggregated"
-        )
+        priors_path = os.path.join(subdir_path, "priors.npy")
+        priors = np.load(priors_path)
+    except FileNotFoundError:
+        priors = None  # pass for now, but will raise error later if needed
 
-        # Load priors
+    # Load check matrix H and compute adjacency matrix if needed for committed cluster metrics
+    adj_matrix = None
+    if "committed_cluster_" in by:
         try:
-            priors_path = os.path.join(subdir_path, "priors.npy")
-            priors = np.load(priors_path)
+            H_path = os.path.join(subdir_path, "H.npz")
+            H = sparse.load_npz(H_path)
+            # Compute adjacency matrix: adj_matrix = (H.T @ H == 1).astype(bool)
+            adj_matrix = (H.T @ H == 1).astype(bool)
         except FileNotFoundError:
-            priors = None  # pass for now, but will raise error later if needed
+            adj_matrix = None  # Will raise error later if needed
 
-        # Load check matrix H and compute adjacency matrix if needed for committed cluster metrics
-        adj_matrix = None
-        if "committed_cluster_" in by:
-            try:
-                H_path = os.path.join(subdir_path, "H.npz")
-                H = sparse.load_npz(H_path)
-                # Compute adjacency matrix: adj_matrix = (H.T @ H == 1).astype(bool)
-                adj_matrix = (H.T @ H == 1).astype(bool)
-            except FileNotFoundError:
-                adj_matrix = None  # Will raise error later if needed
+    # Call aggregate_data for this specific subdirectory
+    # Use the original by parameter for all metrics
+    aggregation_by = by
 
-        # Call aggregate_data for this specific subdirectory
-        try:
-            # Use the original by parameter for all metrics
-            aggregation_by = by
+    df_agg, agg_reused = aggregate_data(
+        subdir_path,  # Process individual subdirectory
+        by=aggregation_by,
+        norm_order=order,
+        decimals=decimals,
+        ascending_confidence=ascending_confidence,
+        df_existing=existing_df_agg,
+        verbose=verbose,
+        priors=priors,
+        eval_windows=eval_windows,
+        adj_matrix=adj_matrix,
+    )
 
-            df_agg, agg_reused = aggregate_data(
-                subdir_path,  # Process individual subdirectory
-                by=aggregation_by,
-                norm_order=order,
-                decimals=decimals,
-                ascending_confidence=ascending_confidence,
-                df_existing=existing_df_agg,
-                verbose=verbose,
-                priors=priors,
-                eval_windows=eval_windows,
-                adj_matrix=adj_matrix,
-            )
-        except FileNotFoundError:
-            return {
-                "param_combo_str": param_combo_str,
-                "success": False,
-                "message": "FileNotFoundError in aggregate_data",
-                "agg_reused": False,
-                "ps_reused": False,
-            }
+    if not agg_reused:
+        save_df(df_agg, dataset_name, method_name, param_combo_str, "aggregated")
 
-        if not agg_reused:
-            save_df(df_agg, dataset_name, method_name, param_combo_str, "aggregated")
+    # Load existing post-selection data if available
+    existing_df_ps = load_existing_df(
+        dataset_name, method_name, param_combo_str, "post_selection"
+    )
 
-        # Load existing post-selection data if available
-        existing_df_ps = load_existing_df(
-            dataset_name, method_name, param_combo_str, "post_selection"
+    # Calculate post-selection data
+    df_ps, ps_reused = get_df_ps(
+        df_agg=df_agg,
+        ascending_confidence=ascending_confidence,
+        existing_df_ps=existing_df_ps,
+    )
+
+    if not ps_reused:
+        # Save post-selection data
+        save_df(
+            df_ps,
+            dataset_name,
+            method_name,
+            param_combo_str,
+            "post_selection",
         )
 
-        # Calculate post-selection data
-        df_ps, ps_reused = get_df_ps(
-            df_agg=df_agg,
-            ascending_confidence=ascending_confidence,
-            existing_df_ps=existing_df_ps,
-        )
-
-        if not ps_reused:
-            # Save post-selection data
-            save_df(
-                df_ps,
-                dataset_name,
-                method_name,
-                param_combo_str,
-                "post_selection",
-            )
-
-        return {
-            "param_combo_str": param_combo_str,
-            "success": True,
-            "message": "Processed successfully",
-            "agg_reused": agg_reused,
-            "ps_reused": ps_reused,
-        }
-
-    except Exception as e:
-        return {
-            "param_combo_str": param_combo_str,
-            "success": False,
-            "message": f"Error: {str(e)}",
-            "agg_reused": False,
-            "ps_reused": False,
-        }
+    return {
+        "param_combo_str": param_combo_str,
+        "success": True,
+        "message": "Processed successfully",
+        "agg_reused": agg_reused,
+        "ps_reused": ps_reused,
+    }
 
 
 # def determine_decimals(by: str) -> int:
@@ -369,7 +350,7 @@ def process_dataset(
                 method_name = f"{by}_{order}"
             else:
                 method_name = by
-            
+
             # Add window information to method name if eval_windows is provided
             if eval_windows is not None:
                 init_window, final_window = eval_windows

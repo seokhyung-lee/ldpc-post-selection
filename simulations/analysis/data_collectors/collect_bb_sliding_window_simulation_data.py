@@ -15,8 +15,10 @@ if __name__ == "__main__":
     ascending_confidences = {}
 
     # Define aggregation types and their confidence directions
-    aggregation_types = ["avg_window", "max_window", "committed"]
-    value_types = ["size", "llr"]
+    # aggregation_types = ["avg_window", "max_window", "committed"]
+    aggregation_types = ["committed"]
+    # value_types = ["size", "llr"]
+    value_types = ["llr"]
 
     # For cluster metrics, higher values typically mean lower confidence
     for agg_type in aggregation_types:

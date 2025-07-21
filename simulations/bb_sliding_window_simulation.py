@@ -172,15 +172,15 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [3e-3]
+    plist = [1e-3]
     nlist = [144]  # [72, 108, 144, 288]
 
     # Sliding window parameters
     window_size = 3
     commit_size = 1
 
-    shots_per_batch = round(5e6)
-    total_shots = round(1e8)
+    shots_per_batch = round(1e7)
+    total_shots = round(1e9)
     n_jobs = 18
     repeat = 10
     dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
