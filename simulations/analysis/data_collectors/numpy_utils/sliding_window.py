@@ -391,7 +391,7 @@ def calculate_committed_cluster_norm_fractions_from_csr(
 
     for sample_idx in range(num_samples):
         # Find indices of committed faults for this sample directly from sparse matrix
-        committed_cluster_fault_indices = combined_committed[sample_idx].nonzero()[1]
+        committed_cluster_fault_indices = combined_committed[sample_idx].nonzero()[0]
 
         if len(committed_cluster_fault_indices) == 0:
             # No committed clusters, norm fraction is 0
