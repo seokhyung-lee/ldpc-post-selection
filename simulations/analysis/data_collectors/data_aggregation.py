@@ -22,6 +22,8 @@ def calculate_df_agg_for_combination(
     disable_tqdm: bool = False,
     eval_windows: Tuple[int, int] | None = None,
     adj_matrix: np.ndarray | None = None,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> Tuple[pd.DataFrame, int]:
     """
     Calculate the post-selection DataFrame (df_agg) for batch directories in a single parameter combination directory.
@@ -95,6 +97,12 @@ def calculate_df_agg_for_combination(
         If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
     adj_matrix : np.ndarray, optional
         Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
+    num_batches : int, optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
 
     Returns
     -------
@@ -143,6 +151,8 @@ def calculate_df_agg_for_combination(
         disable_tqdm,
         eval_windows,
         adj_matrix,
+        num_jobs,
+        num_batches,
     )
 
     # Print detailed benchmarking results if verbose
@@ -228,6 +238,8 @@ def _process_and_aggregate_batches_single_pass(
     disable_tqdm: bool = False,
     eval_windows: Tuple[int, int] | None = None,
     adj_matrix: np.ndarray | None = None,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> Tuple[pd.DataFrame, int, int, dict]:
     """
     Process all batch directories in a single pass and aggregate data using rounding and counting.
@@ -256,6 +268,12 @@ def _process_and_aggregate_batches_single_pass(
         If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
     adj_matrix : np.ndarray, optional
         Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
+    num_batches : int, optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
 
     Returns
     -------
@@ -319,6 +337,8 @@ def _process_and_aggregate_batches_single_pass(
                 verbose=verbose > 1,
                 eval_windows=eval_windows,
                 adj_matrix=adj_matrix,
+                num_jobs=num_jobs,
+                num_batches=num_batches,
             )
         )
 
@@ -761,6 +781,8 @@ def aggregate_data(
     disable_tqdm: bool = False,
     eval_windows: Tuple[int, int] | None = None,
     adj_matrix: np.ndarray | None = None,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> tuple[pd.DataFrame, bool]:
     """
     Aggregate simulation data based on specified metrics from batch directories in a single parameter combination directory.
@@ -836,6 +858,12 @@ def aggregate_data(
         If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
     adj_matrix : np.ndarray, optional
         Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
+    num_batches : int, optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
 
     Returns
     -------
@@ -941,6 +969,8 @@ def aggregate_data(
         disable_tqdm=disable_tqdm,
         eval_windows=eval_windows,
         adj_matrix=adj_matrix,
+        num_jobs=num_jobs,
+        num_batches=num_batches,
     )
 
     if verbose:

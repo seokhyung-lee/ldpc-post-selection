@@ -231,6 +231,8 @@ def _load_and_calculate_sliding_window_metrics(
     priors: np.ndarray | None = None,
     eval_windows: Tuple[int, int] | None = None,
     adj_matrix: np.ndarray | None = None,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, dict]:
     """
     Load and calculate metrics for sliding window format data using CSR-based format.
@@ -282,6 +284,8 @@ def _load_and_calculate_sliding_window_metrics(
         eval_windows,
         adj_matrix,
         timing_info,
+        num_jobs,
+        num_batches,
     )
 
 
@@ -296,9 +300,49 @@ def _handle_new_csr_sliding_window_metrics(
     eval_windows: Tuple[int, int] | None,
     adj_matrix: np.ndarray | None,
     timing_info: dict,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, dict]:
     """
     Handle new CSR-based sliding window metrics.
+
+    Parameters
+    ----------
+    batch_dir_path : str
+        Path to the batch directory.
+    by : str
+        The aggregation method for CSR-based sliding window format.
+    norm_order : float, optional
+        Order for L_p norm calculation.
+    sample_indices : np.ndarray, optional
+        Array of global sample indices to include.
+    batch_start_idx : int
+        Starting global index for this batch.
+    original_batch_size : int
+        Original size of the batch.
+    priors : np.ndarray, optional
+        Prior probabilities for each fault. Required for CSR-based format.
+    eval_windows : tuple of int, optional
+        If provided, only consider windows from init_eval_window to final_eval_window.
+    adj_matrix : np.ndarray, optional
+        Adjacency matrix for cluster labeling. Required for committed cluster metrics.
+    timing_info : dict
+        Dictionary containing timing information.
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations.
+    num_batches : int, optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations.
+
+    Returns
+    -------
+    inside_cluster_size_norms : np.ndarray
+        Array of cluster size norm fractions.
+    inside_cluster_llr_norms : np.ndarray
+        Array of cluster LLR norm fractions.
+    timing_info : dict
+        Dictionary containing timing information.
     """
     if priors is None:
         raise ValueError("priors is required for new CSR-based sliding window format")
@@ -405,6 +449,8 @@ def _handle_new_csr_sliding_window_metrics(
             norm_order,
             value_type,
             eval_windows,
+            num_jobs=num_jobs,
+            num_batches=num_batches,
         )
         timing_info["cluster_calculation_time"] = time.perf_counter() - start_calc
 
@@ -1046,6 +1092,8 @@ def get_values_for_binning_from_batch(
     verbose: bool = False,
     eval_windows: Tuple[int, int] | None = None,
     adj_matrix: np.ndarray | None = None,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> Tuple[pd.Series | None, pd.DataFrame | None, int, dict]:
     """
     Loads data from a single batch directory needed for a specific aggregation method ('by').
@@ -1074,6 +1122,12 @@ def get_values_for_binning_from_batch(
         If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
     adj_matrix : np.ndarray, optional
         Adjacency matrix for cluster labeling. Required for committed cluster metrics in sliding window format.
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
+    num_batches : int, optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
 
     Returns
     -------
@@ -1152,6 +1206,8 @@ def get_values_for_binning_from_batch(
                     priors,
                     eval_windows,
                     adj_matrix,
+                    num_jobs,
+                    num_batches,
                 )
             )
             # Update timing info

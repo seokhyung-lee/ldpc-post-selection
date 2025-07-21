@@ -35,6 +35,8 @@ if __name__ == "__main__":
 
     data_dir = str(DATA_DIR / data_dir_name)
 
+    subdir = "n144_T12_p0.003_W3_F1"
+
     # Process sliding window BB code data
     print("Processing sliding window BB code data...")
     process_dataset(
@@ -44,7 +46,10 @@ if __name__ == "__main__":
         ascending_confidences=ascending_confidences,
         orders=orders,
         decimals=4,
+        subdir=subdir,
         verbose=False,
+        num_jobs=18,
+        num_batches=18 * 10,
     )
 
     print("\nSliding window data collection complete!")

@@ -5,6 +5,8 @@ from typing import Tuple, List
 from scipy.sparse import csr_matrix
 import scipy.sparse as sp
 import igraph as ig
+from joblib import Parallel, delayed
+from src.ldpc_post_selection.cluster_tools import label_clusters_igraph
 
 
 @numba.njit(fastmath=True, cache=True, parallel=True)
@@ -453,6 +455,102 @@ def _compute_logical_or_across_windows(window_matrices: List[csr_matrix]) -> csr
     return combined
 
 
+def _process_sample_batch(
+    sample_indices: List[int],
+    combined_committed_data: np.ndarray,
+    combined_committed_indices: np.ndarray,
+    combined_committed_indptr: np.ndarray,
+    full_graph: ig.Graph,
+    value_type: str,
+    norm_order: float,
+    bit_llrs: np.ndarray | None,
+    total_llr_sum: float,
+    total_committed_faults: int,
+) -> np.ndarray:
+    """
+    Process a batch of samples for committed cluster norm fraction calculation.
+
+    Parameters
+    ----------
+    sample_indices : list of int
+        Indices of samples to process in this batch.
+    combined_committed_data : 1D numpy array
+        CSR matrix data array.
+    combined_committed_indices : 1D numpy array
+        CSR matrix indices array.
+    combined_committed_indptr : 1D numpy array
+        CSR matrix indptr array.
+    full_graph : igraph Graph
+        Pre-constructed graph for cluster labeling.
+    value_type : str
+        Type of values to calculate: "size" or "llr".
+    norm_order : float
+        Order for L_p norm calculation.
+    bit_llrs : 1D numpy array or None
+        LLR values for each fault (None for size calculations).
+    total_llr_sum : float
+        Total sum of LLR values.
+    total_committed_faults : int
+        Total number of committed faults.
+
+    Returns
+    -------
+    batch_norm_fractions : 1D numpy array of float
+        Norm fractions for the processed samples.
+    """
+
+    batch_norm_fractions = np.zeros(len(sample_indices), dtype=float)
+
+    for batch_idx, sample_idx in enumerate(sample_indices):
+        # Find indices of committed faults for this sample directly from sparse matrix
+        row_start = combined_committed_indptr[sample_idx]
+        row_end = combined_committed_indptr[sample_idx + 1]
+
+        committed_cluster_fault_indices = combined_committed_indices[row_start:row_end]
+
+        if len(committed_cluster_fault_indices) == 0:
+            # No committed clusters, norm fraction is 0
+            batch_norm_fractions[batch_idx] = 0.0
+            continue
+
+        # Label clusters using the adjacency matrix
+        cluster_labels = label_clusters_igraph(
+            full_graph, committed_cluster_fault_indices
+        )
+
+        # Extract cluster labels for committed faults only
+        nonzero_cluster_labels = cluster_labels[committed_cluster_fault_indices]
+
+        # Calculate norm fractions based on cluster labels
+        if value_type == "size":
+            # Use optimized numba kernel for size norm calculation
+            inside_norm = _calculate_size_norm_fraction_numba(
+                nonzero_cluster_labels, norm_order
+            )
+            batch_norm_fractions[batch_idx] = (
+                inside_norm / total_committed_faults
+                if total_committed_faults > 0
+                else 0.0
+            )
+
+        elif value_type == "llr":
+            # Use optimized numba kernel for LLR norm calculation
+            llr_values_for_committed = bit_llrs[committed_cluster_fault_indices]
+            inside_norm = _calculate_llr_norm_fraction_numba(
+                nonzero_cluster_labels, llr_values_for_committed, norm_order
+            )
+            batch_norm_fractions[batch_idx] = (
+                inside_norm / total_llr_sum if total_llr_sum > 0 else 0.0
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown value_type: {value_type}. Must be 'size' or 'llr'."
+            )
+
+    return batch_norm_fractions
+
+
 def calculate_committed_cluster_norm_fractions_from_csr(
     committed_clusters_csr: csr_matrix,
     committed_faults: List[np.ndarray],
@@ -462,6 +560,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     value_type: str,
     eval_windows: Tuple[int, int] | None = None,
     _benchmarking: bool = False,
+    num_jobs: int = 1,
+    num_batches: int | None = None,
 ) -> np.ndarray:
     """
     Optimized calculation of committed cluster norm fractions from CSR matrix.
@@ -489,14 +589,16 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         If provided, only consider windows from init_eval_window to final_eval_window.
     _benchmarking : bool, optional
         If True, print detailed timing information for performance analysis.
+    num_jobs : int, optional
+        Number of parallel processes to use. Default is 1 (sequential processing).
+    num_batches : int, optional
+        Number of batches to split samples into. If None, defaults to num_jobs.
 
     Returns
     -------
     norm_fractions : 1D numpy array of float
         Norm fractions for each sample based on combined committed clusters.
     """
-    # Import here to avoid circular imports
-    from src.ldpc_post_selection.cluster_tools import label_clusters_igraph
 
     if _benchmarking:
         start_time = time.perf_counter()
@@ -591,103 +693,78 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     else:
         bit_llrs = None
         total_llr_sum = 0.0
-    
+
     # Pre-compute total committed faults for size calculations
     total_committed_faults = np.sum(combined_committed_faults)
+
+    # Set num_batches to num_jobs if not specified
+    if num_batches is None:
+        num_batches = num_jobs
 
     # Process each sample to convert boolean matrix to labeled clusters
     norm_fractions = np.zeros(num_samples, dtype=float)
 
     if _benchmarking:
         loop_start = time.perf_counter()
-        loop_times = {
-            "nonzero_ops": 0.0,
-            "cluster_labeling": 0.0,
-            "norm_calculations": 0.0,
-        }
         print(f"Starting main sample processing loop for {num_samples} samples...")
+        print(f"Using {num_jobs} processes with {num_batches} batches")
 
-    for sample_idx in range(num_samples):
-        # Find indices of committed faults for this sample directly from sparse matrix
-        if _benchmarking:
-            nonzero_start = time.perf_counter()
+    # Prepare sample batches
+    if num_jobs > 1 and num_samples > 0:
+        # Split samples into batches for parallel processing using numpy
+        sample_indices = np.arange(num_samples)
+        batches = np.array_split(sample_indices, num_batches)
 
-        row_start = combined_committed.indptr[sample_idx]
-        row_end = combined_committed.indptr[sample_idx + 1]
-
-        committed_cluster_fault_indices = combined_committed.indices[row_start:row_end]
-
-        if _benchmarking:
-            loop_times["nonzero_ops"] += time.perf_counter() - nonzero_start
-
-        if len(committed_cluster_fault_indices) == 0:
-            # No committed clusters, norm fraction is 0
-            norm_fractions[sample_idx] = 0.0
-            continue
-
-        # Label clusters using the adjacency matrix
-        if _benchmarking:
-            cluster_start = time.perf_counter()
-
-        # Use optimized igraph implementation for connected components analysis
-        cluster_labels = label_clusters_igraph(
-            full_graph, committed_cluster_fault_indices
+        # Process batches in parallel
+        batch_results = Parallel(n_jobs=num_jobs)(
+            delayed(_process_sample_batch)(
+                batch,
+                combined_committed.data,
+                combined_committed.indices,
+                combined_committed.indptr,
+                full_graph,
+                value_type,
+                norm_order,
+                bit_llrs,
+                total_llr_sum,
+                total_committed_faults,
+            )
+            for batch in batches
         )
 
-        if _benchmarking:
-            loop_times["cluster_labeling"] += time.perf_counter() - cluster_start
-
-        # Extract cluster labels for committed faults only
-        nonzero_cluster_labels = cluster_labels[committed_cluster_fault_indices]
-
-        # Calculate norm fractions based on cluster labels
-        if _benchmarking:
-            norm_start = time.perf_counter()
-
-        if value_type == "size":
-            # Use optimized numba kernel for size norm calculation
-            inside_norm = _calculate_size_norm_fraction_numba(nonzero_cluster_labels, norm_order)
-            norm_fractions[sample_idx] = (
-                inside_norm / total_committed_faults
-                if total_committed_faults > 0
-                else 0.0
-            )
-
-        elif value_type == "llr":
-            # Use optimized numba kernel for LLR norm calculation
-            llr_values_for_committed = bit_llrs[committed_cluster_fault_indices]
-            inside_norm = _calculate_llr_norm_fraction_numba(
-                nonzero_cluster_labels, llr_values_for_committed, norm_order
-            )
-            norm_fractions[sample_idx] = (
-                inside_norm / total_llr_sum if total_llr_sum > 0 else 0.0
-            )
-
+    else:
+        # Sequential processing: use single batch with all samples
+        if num_samples > 0:
+            sample_indices = np.arange(num_samples)
+            batch_results = [
+                _process_sample_batch(
+                    sample_indices,
+                    combined_committed.data,
+                    combined_committed.indices,
+                    combined_committed.indptr,
+                    full_graph,
+                    value_type,
+                    norm_order,
+                    bit_llrs,
+                    total_llr_sum,
+                    total_committed_faults,
+                )
+            ]
         else:
-            raise ValueError(
-                f"Unknown value_type: {value_type}. Must be 'size' or 'llr'."
-            )
+            batch_results = []
 
-        if _benchmarking:
-            loop_times["norm_calculations"] += time.perf_counter() - norm_start
+    # Combine results from all batches using numpy operations
+    if batch_results:
+        if len(norm_fractions) > 1:
+            norm_fractions = np.concatenate(batch_results)
+        else:
+            norm_fractions = batch_results[0]
 
     if _benchmarking:
         loop_total_time = time.perf_counter() - loop_start
         total_time = time.perf_counter() - start_time
 
         print(f"Main loop total time: {loop_total_time:.4f}s")
-        print(
-            f"  - Nonzero operations: {loop_times['nonzero_ops']:.4f}s "
-            f"({loop_times['nonzero_ops']/loop_total_time*100:.1f}%)"
-        )
-        print(
-            f"  - Cluster labeling: {loop_times['cluster_labeling']:.4f}s "
-            f"({loop_times['cluster_labeling']/loop_total_time*100:.1f}%)"
-        )
-        print(
-            f"  - Norm calculations: {loop_times['norm_calculations']:.4f}s "
-            f"({loop_times['norm_calculations']/loop_total_time*100:.1f}%)"
-        )
         print(f"Total function time: {total_time:.4f}s")
         print("=" * 60)
 

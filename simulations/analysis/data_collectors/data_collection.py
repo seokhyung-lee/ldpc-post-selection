@@ -146,6 +146,8 @@ def process_single_subdirectory(
     ascending_confidence: bool,
     verbose: bool,
     eval_windows: Optional[tuple[int, int]] = None,
+    num_jobs: int = 1,
+    num_batches: Optional[int] = None,
 ) -> Dict[str, str | bool]:
     """
     Process a single subdirectory for data aggregation and post-selection.
@@ -173,6 +175,12 @@ def process_single_subdirectory(
         Whether to print detailed progress information.
     eval_windows : Optional[tuple[int, int]], optional
         If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
+    num_batches : Optional[int], optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
 
     Returns
     -------
@@ -239,6 +247,8 @@ def process_single_subdirectory(
         priors=priors,
         eval_windows=eval_windows,
         adj_matrix=adj_matrix,
+        num_jobs=num_jobs,
+        num_batches=num_batches,
     )
 
     if not agg_reused:
@@ -292,6 +302,8 @@ def process_dataset(
     dataset_type: Optional[str] = None,
     eval_windows: Optional[tuple[int, int]] = None,
     subdir: Optional[str] = None,
+    num_jobs: int = 1,
+    num_batches: Optional[int] = None,
 ) -> None:
     """
     Process a dataset with given parameters.
@@ -325,6 +337,12 @@ def process_dataset(
         Should be a relative path from data_dir to the target subdirectory.
         For simple datasets: e.g., 'd13_T13_p0.001'. For HGP datasets: e.g., 'circuit_folder/circuit_name'.
         If None, processes all subdirectories (default behavior).
+    num_jobs : int, optional
+        Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
+    num_batches : Optional[int], optional
+        Number of batches to split samples into for parallel processing. If None, defaults to num_jobs.
+        Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
     """
     # Infer dataset_type from dataset_name if not provided
     if dataset_type is None:
@@ -404,6 +422,8 @@ def process_dataset(
                     ascending_confidence,
                     verbose,
                     eval_windows,
+                    num_jobs,
+                    num_batches,
                 )
                 for subdir_info in subdirs_info
             ]
