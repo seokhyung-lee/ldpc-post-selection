@@ -3,6 +3,8 @@ import numpy as np
 import time
 from typing import Tuple, List
 from scipy.sparse import csr_matrix
+import scipy.sparse as sp
+import igraph as ig
 
 
 @numba.njit(fastmath=True, cache=True, parallel=True)
@@ -328,8 +330,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     """
     Optimized calculation of committed cluster norm fractions from CSR matrix.
 
-    This function uses optimized window splitting and logical OR operations,
-    but still relies on scipy for connected components (label_clusters).
+    This function uses optimized window splitting, logical OR operations, and 
+    igraph-based connected components analysis for maximum performance.
 
     Parameters
     ----------
@@ -349,6 +351,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         Type of values to calculate: "size" or "llr".
     eval_windows : tuple of int, optional
         If provided, only consider windows from init_eval_window to final_eval_window.
+    _benchmarking : bool, optional
+        If True, print detailed timing information for performance analysis.
 
     Returns
     -------
@@ -356,7 +360,7 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         Norm fractions for each sample based on combined committed clusters.
     """
     # Import here to avoid circular imports
-    from src.ldpc_post_selection.cluster_tools import label_clusters
+    from src.ldpc_post_selection.cluster_tools import label_clusters_igraph
 
     if _benchmarking:
         start_time = time.perf_counter()
@@ -416,6 +420,28 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         faults_time = time.perf_counter() - faults_start
         print(f"Committed faults processing time: {faults_time:.4f}s")
 
+    # Pre-create igraph Graph for maximum performance
+    if _benchmarking:
+        graph_creation_start = time.perf_counter()
+        print("Creating full igraph Graph using efficient CSR → COO conversion...")
+    
+    # Use efficient CSR → COO → igraph conversion as suggested
+    if hasattr(adj_matrix, 'tocoo'):
+        # It's already a sparse matrix
+        coo = adj_matrix.tocoo()
+    else:
+        # Convert dense matrix to sparse COO format first
+        coo = sp.coo_matrix(adj_matrix)
+    
+    # Create igraph using the efficient method: CSR → COO → igraph
+    full_graph = ig.Graph(n=coo.shape[0], directed=False)
+    full_graph.add_edges(zip(coo.row, coo.col))
+    
+    if _benchmarking:
+        graph_creation_time = time.perf_counter() - graph_creation_start
+        print(f"Graph creation time: {graph_creation_time:.4f}s")
+        print(f"Created graph with {full_graph.vcount()} vertices and {full_graph.ecount()} edges")
+
     # Process each sample to convert boolean matrix to labeled clusters
     norm_fractions = np.zeros(num_samples, dtype=float)
     
@@ -447,7 +473,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         if _benchmarking:
             cluster_start = time.perf_counter()
             
-        cluster_labels = label_clusters(adj_matrix, committed_cluster_fault_indices)
+        # Use optimized igraph implementation for connected components analysis
+        cluster_labels = label_clusters_igraph(full_graph, committed_cluster_fault_indices)
         
         if _benchmarking:
             loop_times['cluster_labeling'] += time.perf_counter() - cluster_start

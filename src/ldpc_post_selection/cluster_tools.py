@@ -2,6 +2,7 @@ from typing import Tuple
 
 import numba
 import numpy as np
+import igraph as ig
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
@@ -75,5 +76,57 @@ def label_clusters(
     # Map back to original vertex indices using vectorized assignment
     cluster_idx = np.zeros(adj_matrix.shape[0], dtype=int)
     cluster_idx[vertices_inside_clusters] = labels + 1  # +1 to make labels start from 1
+
+    return cluster_idx
+
+
+def label_clusters_igraph(
+    full_graph: ig.Graph, vertices_inside_clusters: np.ndarray
+) -> np.ndarray:
+    """
+    Label connected components (clusters) using python-igraph with pre-created graph.
+
+    This function uses a pre-created igraph Graph and extracts subgraphs efficiently,
+    eliminating the need to recreate the graph for each sample. This provides
+    significant performance improvements over both the original scipy implementation
+    and the previous igraph implementation that recreated graphs.
+
+    Parameters
+    ----------
+    full_graph : igraph.Graph
+        Pre-created igraph Graph object representing the full adjacency structure.
+    vertices_inside_clusters : 1D numpy array of int
+        Array of vertex indices that should be considered for clustering.
+
+    Returns
+    -------
+    cluster_idx : 1D numpy array of int with shape (N,)
+        Cluster label for each vertex (1, 2, ...). Vertices not in clusters have value 0.
+    """
+    # Input validation
+    if len(vertices_inside_clusters) > 0 and (
+        vertices_inside_clusters.max() >= full_graph.vcount()
+        or vertices_inside_clusters.min() < 0
+    ):
+        raise ValueError("inside_indices contains invalid vertex indices")
+
+    if len(vertices_inside_clusters) == 0:
+        return np.zeros(full_graph.vcount(), dtype=int)
+
+    # Extract subgraph using igraph's native and efficient subgraph method
+    # This is much faster than recreating the graph from adjacency matrix
+    subgraph = full_graph.subgraph(vertices_inside_clusters)
+
+    # Find connected components directly on the igraph subgraph
+    components = subgraph.connected_components()
+
+    # Prepare result array
+    cluster_idx = np.zeros(full_graph.vcount(), dtype=int)
+
+    # Convert membership list to NumPy array and make 1-based labels
+    membership = np.asarray(components.membership, dtype=int) + 1
+
+    # Vectorized assignment - much faster than Python for loop
+    cluster_idx[vertices_inside_clusters] = membership
 
     return cluster_idx
