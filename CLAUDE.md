@@ -100,3 +100,14 @@ Important definitions related to clusters:
 - Cluster LLR norm of order `alpha`: `alpha`-norm of the cluster LLR vector.
 - Cluster size norm fraction: Cluster size norm divided by total number of faults (including faults that don't belong to any clusters).
 - Cluster LLR norm fraction: Cluster LLR norm divided by the summation of all fault LLRs
+
+## Documents
+
+`docs/` contains documents in markdown format.
+
+- `sliding_window_decoding.md`: Comprehensive descriptions on sliding window decoding
+- `sliding_window_real_time_post_selection.md`: Real-time post-selection strategy for sliding window decoding
+
+## Documentation Guidelines
+
+- Whenever a document is added to `docs/`, add a concise description in this `CLAUDE.md` file under the "Documents" section
