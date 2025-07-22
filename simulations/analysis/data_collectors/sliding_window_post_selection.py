@@ -13,8 +13,10 @@ from scipy.sparse import csr_matrix
 from typing import Dict, List, Tuple, Optional, Union
 import warnings
 from pathlib import Path
+from joblib import Parallel, delayed
+import numba
 
-from .numpy_utils.sliding_window import (
+from .utils.sliding_window import (
     calculate_committed_cluster_norm_fractions_from_csr,
 )
 from simulations.analysis.plotting_helpers import get_confint
@@ -374,12 +376,11 @@ class RealTimePostSelectionAnalyzer:
         if np.any(valid_mask):
             # Compute confidence intervals only for valid cases
             p_fail_valid, delta_p_fail_valid = get_confint(
-                num_failed_accepted[valid_mask], 
-                num_accepted[valid_mask]
+                num_failed_accepted[valid_mask], num_accepted[valid_mask]
             )
             p_fail[valid_mask] = p_fail_valid
             delta_p_fail[valid_mask] = delta_p_fail_valid
-        
+
         # For invalid cases (num_accepted == 0), p_fail and delta_p_fail remain 0
 
         return {
@@ -531,3 +532,89 @@ def analyze_parameter_combination(
     combined_results = {**results, **statistics}
 
     return combined_results
+
+
+def batch_postselection_analysis(
+    data_dir: str,
+    param_combinations: List[str],
+    cutoffs: np.ndarray,
+    metric_windows: int = 1,
+    norm_order: float = 2.0,
+    value_type: str = "llr",
+    num_jobs: int = 1,
+    verbose: bool = True,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """
+    High-performance batch processing of multiple parameter combinations.
+
+    Efficiently processes multiple sliding window parameter combinations in parallel
+    for comprehensive post-selection analysis with arbitrary cutoff arrays.
+
+    Parameters
+    ----------
+    data_dir : str
+        Path to the raw sliding window data directory.
+    param_combinations : List[str]
+        List of parameter combination strings to process.
+    cutoffs : np.ndarray
+        Array of cutoff values to test across all combinations.
+    metric_windows : int, default=1
+        Number of windows for metric evaluation.
+    norm_order : float, default=2.0
+        Order for L_p norm calculation.
+    value_type : str, default="llr"
+        Type of cluster value calculation ("size" or "llr").
+    num_jobs : int, default=1
+        Number of parallel jobs for batch processing.
+    verbose : bool, default=True
+        Whether to print progress information.
+
+    Returns
+    -------
+    Dict[str, Dict[str, np.ndarray]]
+        Nested dictionary with results for each parameter combination.
+        Structure: {param_combo: {result_key: result_array}}
+    """
+    if verbose:
+        print(
+            f"Starting batch post-selection analysis for {len(param_combinations)} combinations"
+        )
+        print(f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs")
+
+    def process_single_combination(
+        param_combo: str,
+    ) -> Tuple[str, Dict[str, np.ndarray]]:
+        """Process a single parameter combination."""
+        if verbose:
+            print(f"Processing {param_combo}...")
+
+        results = analyze_parameter_combination(
+            data_dir=data_dir,
+            param_combo=param_combo,
+            cutoffs=cutoffs,
+            metric_windows=metric_windows,
+            norm_order=norm_order,
+            value_type=value_type,
+        )
+        return param_combo, results
+
+    # Process combinations in parallel
+    if num_jobs > 1:
+        results_list = Parallel(n_jobs=num_jobs)(
+            delayed(process_single_combination)(combo) for combo in param_combinations
+        )
+    else:
+        results_list = [
+            process_single_combination(combo) for combo in param_combinations
+        ]
+
+    # Convert to dictionary
+    results_dict = {combo: results for combo, results in results_list}
+
+    if verbose:
+        successful = sum(1 for _, results in results_list if results)
+        print(
+            f"Successfully processed {successful}/{len(param_combinations)} combinations"
+        )
+
+    return results_dict

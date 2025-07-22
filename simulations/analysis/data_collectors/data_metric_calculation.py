@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from simulations.analysis.data_collectors.numpy_utils import (
+from simulations.analysis.data_collectors.utils import (
     calculate_cluster_norms_from_flat_data,
     calculate_cluster_metrics_from_csr,
     calculate_window_cluster_norm_fracs_from_csr,

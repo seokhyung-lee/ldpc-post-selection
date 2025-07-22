@@ -12,9 +12,8 @@ import numpy as np
 from pathlib import Path
 
 from simulations.analysis.data_collectors.data_collection import DATA_DIR
-from simulations.analysis.data_collectors.numpy_utils.sliding_window import (
+from simulations.analysis.data_collectors.sliding_window_post_selection import (
     batch_postselection_analysis,
-    optimize_postselection_parameters,
 )
 
 
@@ -84,43 +83,6 @@ def main():
 
                     # Store results
                     postselection_results[config_name] = batch_results
-
-                    # Analyze and print key insights for each parameter combination
-                    print(f"\nOptimal parameters for {config_name}:")
-                    for param_combo, results in batch_results.items():
-                        if not results:  # Skip failed analyses
-                            continue
-
-                        # Find optimal cutoff values for different targets
-                        optimal_params = optimize_postselection_parameters(
-                            results,
-                            target_abort_rate=0.1,  # 10% abort rate target
-                            target_effective_trials=1.5,  # 1.5x effective trials target
-                            optimization_metric="p_fail",
-                        )
-
-                        print(f"  {param_combo}:")
-                        print(
-                            f"    Optimal cutoff: {optimal_params['optimal_cutoff']:.6f}"
-                        )
-
-                        # Show confidence interval for achieved p_fail
-                        opt_idx = optimal_params["optimal_index"]
-                        achieved_p_fail = optimal_params["achieved_p_fail"]
-                        achieved_delta_p_fail = results["delta_p_fail"][opt_idx]
-                        print(
-                            f"    LER: {achieved_p_fail:.2e}±{achieved_delta_p_fail:.2e}"
-                        )
-
-                        print(
-                            f"    Abort rate: {optimal_params['achieved_p_abort']:.3f}"
-                        )
-                        print(
-                            f"    Effective trials: {optimal_params['achieved_effective_trials']:.3f}"
-                        )
-                        print(
-                            f"    Meets constraints: {optimal_params['meets_constraints']}"
-                        )
 
                 except Exception as e:
                     print(f"Error processing {config_name}: {e}")
