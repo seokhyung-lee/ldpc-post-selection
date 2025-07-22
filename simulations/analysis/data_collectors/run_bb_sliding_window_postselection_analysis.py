@@ -59,7 +59,8 @@ def main():
     # =============================================================================
 
     # Process parameter configurations
-    postselection_results = {}
+    base_results_dir = DATA_DIR / "real_time_post_selection"
+    total_saved_files = []
 
     for metric_windows in postselection_config["metric_windows"]:
         for norm_order in postselection_config["norm_orders"]:
@@ -80,39 +81,26 @@ def main():
                     verbose=postselection_config["verbose"],
                 )
 
-                # Store results
-                postselection_results[config_name] = batch_results
+                # Save results immediately after processing this config
+                if batch_results:
+                    for subdir, results in batch_results.items():
+                        if results:
+                            # Create directory structure for this subdir
+                            subdir_dir = base_results_dir / "bb" / subdir
+                            subdir_dir.mkdir(parents=True, exist_ok=True)
 
-    # =============================================================================
-    # Results Saving
-    # =============================================================================
+                            # Save individual config results
+                            config_path = subdir_dir / f"{config_name}.pkl"
+                            with open(config_path, "wb") as f:
+                                pickle.dump(results, f)
 
-    # Save results for each subdir separately
-    base_results_dir = DATA_DIR / "real_time_post_selection"
-    saved_files = []
+                            total_saved_files.append(str(config_path))
+                            print(f"Saved {config_name}/{subdir} results to: {config_path}")
 
-    for config_name, batch_results in postselection_results.items():
-        if not batch_results:
-            continue
+                # Clear data from memory after saving
+                del batch_results
 
-        # Save each subdir's results separately
-        for subdir, results in batch_results.items():
-            if not results:
-                continue
-
-            # Create directory structure for this subdir
-            subdir_dir = base_results_dir / "bb" / subdir
-            subdir_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save individual config results
-            config_path = subdir_dir / f"{config_name}.pkl"
-            with open(config_path, "wb") as f:
-                pickle.dump(results, f)
-
-            saved_files.append(str(config_path))
-            print(f"Saved {config_name}/{subdir} results to: {config_path}")
-
-    print(f"\nPost-selection analysis complete! Saved {len(saved_files)} result files.")
+    print(f"\nPost-selection analysis complete! Saved {len(total_saved_files)} result files.")
 
     # =============================================================================
     # Summary Generation
@@ -121,15 +109,19 @@ def main():
 
     print(f"\nReal-time post-selection analysis complete!")
     print(f"Results directory: {base_results_dir}")
-    print(
-        f"Saved {len(saved_files)} result files across {len([r for r in postselection_results.values() if r])} configurations"
-    )
+    
+    # Calculate number of configurations processed
+    num_configs = (len(postselection_config["metric_windows"]) * 
+                   len(postselection_config["norm_orders"]) * 
+                   len(postselection_config["value_types"]))
+    
+    print(f"Saved {len(total_saved_files)} result files across {num_configs} configurations")
 
     # Show the organized file structure
-    if saved_files:
+    if total_saved_files:
         print("\nSaved file structure:")
         current_subdir = None
-        for file_path in saved_files:
+        for file_path in total_saved_files:
             subdir_name = str(Path(file_path).parent.name)  # Extract subdir name
             config_name = str(Path(file_path).stem)  # Extract config name
             if subdir_name != current_subdir:
