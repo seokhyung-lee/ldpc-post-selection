@@ -562,6 +562,7 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     _benchmarking: bool = False,
     num_jobs: int = 1,
     num_batches: int | None = None,
+    verbose: int = 0,
 ) -> np.ndarray:
     """
     Optimized calculation of committed cluster norm fractions from CSR matrix.
@@ -593,7 +594,8 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         Number of parallel processes to use. Default is 1 (sequential processing).
     num_batches : int, optional
         Number of batches to split samples into. If None, defaults to num_jobs.
-
+    verbose : int, optional
+        Verbosity level for joblib.
     Returns
     -------
     norm_fractions : 1D numpy array of float
@@ -716,7 +718,7 @@ def calculate_committed_cluster_norm_fractions_from_csr(
         batches = np.array_split(sample_indices, num_batches)
 
         # Process batches in parallel
-        batch_results = Parallel(n_jobs=num_jobs)(
+        batch_results = Parallel(n_jobs=num_jobs, verbose=verbose)(
             delayed(_process_sample_batch)(
                 batch,
                 combined_committed.data,

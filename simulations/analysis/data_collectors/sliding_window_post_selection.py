@@ -135,7 +135,12 @@ class RealTimePostSelectionAnalyzer:
 
         # Step 1: Pre-compute metrics matrix for all samples and evaluatable windows
         metrics_matrix = self._compute_metrics_matrix_vectorized(
-            first_eval_window, metric_windows, norm_order, value_type, disable_cache, num_jobs
+            first_eval_window,
+            metric_windows,
+            norm_order,
+            value_type,
+            disable_cache,
+            num_jobs,
         )
 
         # Step 2: Vectorized cutoff evaluation using broadcasting
@@ -226,7 +231,8 @@ class RealTimePostSelectionAnalyzer:
                 eval_windows=eval_windows,
                 _benchmarking=False,
                 num_jobs=num_jobs,
-                num_batches=None,
+                num_batches=num_jobs * 5,
+                verbose=3,
             )
 
             metrics_matrix[:, i] = window_metrics
@@ -602,7 +608,9 @@ def batch_postselection_analysis(
         print(
             f"Starting batch post-selection analysis for {len(param_combinations)} combinations"
         )
-        print(f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs for sample processing")
+        print(
+            f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs for sample processing"
+        )
 
     # Process combinations sequentially (since typically only 1 subdir) but with parallel sample processing
     results_list = []
