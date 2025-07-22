@@ -14,7 +14,6 @@ from pathlib import Path
 from simulations.analysis.data_collectors.data_collection import DATA_DIR
 from simulations.analysis.data_collectors.numpy_utils.sliding_window import (
     batch_postselection_analysis,
-    create_cutoff_arrays,
     optimize_postselection_parameters,
 )
 
@@ -38,99 +37,94 @@ def main():
 
     # Configuration for post-selection analysis
     postselection_config = {
-        "metric_windows": [1, 2, 3],  # Different window sizes to test
+        "metric_windows": [3],  # Different window sizes to test
         "norm_orders": [2.0],  # L2 norm (can extend to [1.0, 2.0, np.inf])
         "value_types": ["llr"],  # Focus on LLR-based analysis
-        "num_jobs": 8,  # Parallel processing
+        "num_jobs": 18,  # Parallel processing
         "verbose": True,
     }
 
     # =============================================================================
-    # Cutoff Array Creation
+    # Cutoff Array Definition
     # =============================================================================
 
-    # Create comprehensive cutoff arrays for analysis
-    cutoff_arrays = create_cutoff_arrays(
-        fine_range=(0.002, 0.08),  # Fine-grained range around typical values
-        fine_points=100,
-        coarse_range=(1e-4, 0.2),  # Broader coarse range
-        coarse_points=30,
-        log_scale=True,
-    )
+    # Define cutoff array for post-selection analysis
+    cutoffs = np.logspace(-3, -1, 20).round(6)
 
-    print(f"Created cutoff arrays:")
-    for name, cutoffs in cutoff_arrays.items():
-        print(
-            f"  {name}: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"
-        )
+    print(
+        f"Using cutoffs: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"
+    )
 
     # =============================================================================
     # Analysis Execution
     # =============================================================================
 
-    # Process each cutoff array configuration
+    # Process parameter configurations
     postselection_results = {}
 
-    for cutoff_name, cutoffs in cutoff_arrays.items():
-        print(f"\n--- Processing cutoff array: {cutoff_name} ---")
+    for metric_windows in postselection_config["metric_windows"]:
+        for norm_order in postselection_config["norm_orders"]:
+            for value_type in postselection_config["value_types"]:
 
-        for metric_windows in postselection_config["metric_windows"]:
-            for norm_order in postselection_config["norm_orders"]:
-                for value_type in postselection_config["value_types"]:
+                config_name = f"mw{metric_windows}_ord{norm_order}_{value_type}"
+                print(f"\nConfiguration: {config_name}")
 
-                    config_name = (
-                        f"{cutoff_name}_mw{metric_windows}_ord{norm_order}_{value_type}"
+                try:
+                    # Run batch post-selection analysis
+                    batch_results = batch_postselection_analysis(
+                        data_dir=data_dir,
+                        param_combinations=subdirs,
+                        cutoffs=cutoffs,
+                        metric_windows=metric_windows,
+                        norm_order=norm_order,
+                        value_type=value_type,
+                        num_jobs=postselection_config["num_jobs"],
+                        verbose=postselection_config["verbose"],
                     )
-                    print(f"Configuration: {config_name}")
 
-                    try:
-                        # Run batch post-selection analysis
-                        batch_results = batch_postselection_analysis(
-                            data_dir=data_dir,
-                            param_combinations=subdirs,
-                            cutoffs=cutoffs,
-                            metric_windows=metric_windows,
-                            norm_order=norm_order,
-                            value_type=value_type,
-                            num_jobs=postselection_config["num_jobs"],
-                            verbose=postselection_config["verbose"],
+                    # Store results
+                    postselection_results[config_name] = batch_results
+
+                    # Analyze and print key insights for each parameter combination
+                    print(f"\nOptimal parameters for {config_name}:")
+                    for param_combo, results in batch_results.items():
+                        if not results:  # Skip failed analyses
+                            continue
+
+                        # Find optimal cutoff values for different targets
+                        optimal_params = optimize_postselection_parameters(
+                            results,
+                            target_abort_rate=0.1,  # 10% abort rate target
+                            target_effective_trials=1.5,  # 1.5x effective trials target
+                            optimization_metric="p_fail",
                         )
 
-                        # Store results
-                        postselection_results[config_name] = batch_results
+                        print(f"  {param_combo}:")
+                        print(
+                            f"    Optimal cutoff: {optimal_params['optimal_cutoff']:.6f}"
+                        )
 
-                        # Analyze and print key insights for each parameter combination
-                        print(f"\nOptimal parameters for {config_name}:")
-                        for param_combo, results in batch_results.items():
-                            if not results:  # Skip failed analyses
-                                continue
+                        # Show confidence interval for achieved p_fail
+                        opt_idx = optimal_params["optimal_index"]
+                        achieved_p_fail = optimal_params["achieved_p_fail"]
+                        achieved_delta_p_fail = results["delta_p_fail"][opt_idx]
+                        print(
+                            f"    LER: {achieved_p_fail:.2e}±{achieved_delta_p_fail:.2e}"
+                        )
 
-                            # Find optimal cutoff values for different targets
-                            optimal_params = optimize_postselection_parameters(
-                                results,
-                                target_abort_rate=0.1,  # 10% abort rate target
-                                target_effective_trials=1.5,  # 1.5x effective trials target
-                                optimization_metric="p_fail",
-                            )
+                        print(
+                            f"    Abort rate: {optimal_params['achieved_p_abort']:.3f}"
+                        )
+                        print(
+                            f"    Effective trials: {optimal_params['achieved_effective_trials']:.3f}"
+                        )
+                        print(
+                            f"    Meets constraints: {optimal_params['meets_constraints']}"
+                        )
 
-                            print(f"  {param_combo}:")
-                            print(
-                                f"    Optimal cutoff: {optimal_params['optimal_cutoff']:.6f}"
-                            )
-                            print(f"    LER: {optimal_params['achieved_p_fail']:.2e}")
-                            print(
-                                f"    Abort rate: {optimal_params['achieved_p_abort']:.3f}"
-                            )
-                            print(
-                                f"    Effective trials: {optimal_params['achieved_effective_trials']:.3f}"
-                            )
-                            print(
-                                f"    Meets constraints: {optimal_params['meets_constraints']}"
-                            )
-
-                    except Exception as e:
-                        print(f"Error processing {config_name}: {e}")
-                        postselection_results[config_name] = {}
+                except Exception as e:
+                    print(f"Error processing {config_name}: {e}")
+                    postselection_results[config_name] = {}
 
     # =============================================================================
     # Results Saving
@@ -183,9 +177,11 @@ def main():
                 ("20% abort", high_abort_idx),
             ]:
                 if idx > 0 and idx < len(cutoffs):
+                    p_fail_val = results["p_fail"][idx]
+                    delta_p_fail_val = results["delta_p_fail"][idx]
                     print(
                         f"    {desc}: cutoff={cutoffs[idx]:.4f}, "
-                        f"LER={results['p_fail'][idx]:.2e}, "
+                        f"LER={p_fail_val:.2e}±{delta_p_fail_val:.2e}, "
                         f"trials={effective_avg_trials[idx]:.2f}"
                     )
 

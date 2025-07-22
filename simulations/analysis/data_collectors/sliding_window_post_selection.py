@@ -17,6 +17,7 @@ from pathlib import Path
 from .numpy_utils.sliding_window import (
     calculate_committed_cluster_norm_fractions_from_csr,
 )
+from simulations.analysis.plotting_helpers import get_confint
 
 
 class RealTimePostSelectionAnalyzer:
@@ -329,6 +330,7 @@ class RealTimePostSelectionAnalyzer:
         Dict[str, np.ndarray]
             Dictionary containing statistics for each cutoff:
             - 'p_fail': Logical error rate (failures among accepted samples)
+            - 'delta_p_fail': Margin of error for p_fail (95% confidence interval)
             - 'p_abort': Abort rate (fraction of samples aborted)
             - 'effective_avg_trials': Average effective trials among accepted samples
             - 'num_accepted': Number of accepted samples
@@ -341,6 +343,7 @@ class RealTimePostSelectionAnalyzer:
 
         # Initialize output arrays
         p_fail = np.zeros(num_cutoffs, dtype=np.float64)
+        delta_p_fail = np.zeros(num_cutoffs, dtype=np.float64)
         p_abort = np.zeros(num_cutoffs, dtype=np.float64)
         effective_avg_trials = np.zeros(num_cutoffs, dtype=np.float64)
         num_accepted = np.zeros(num_cutoffs, dtype=int)
@@ -355,19 +358,33 @@ class RealTimePostSelectionAnalyzer:
                 # Logical error rate among accepted samples
                 failed_accepted = fails & accepted_samples
                 num_failed_accepted[i] = np.sum(failed_accepted)
-                p_fail[i] = num_failed_accepted[i] / num_accepted[i]
 
                 # Average effective trials among accepted samples
                 effective_avg_trials[i] = np.mean(effective_trials[accepted_samples, i])
             else:
-                p_fail[i] = 0.0
+                num_failed_accepted[i] = 0
                 effective_avg_trials[i] = 0.0
 
             # Abort rate
             p_abort[i] = 1.0 - (num_accepted[i] / self.num_samples)
 
+        # Compute confidence intervals for p_fail using get_confint
+        # Handle edge cases where num_accepted is zero
+        valid_mask = num_accepted > 0
+        if np.any(valid_mask):
+            # Compute confidence intervals only for valid cases
+            p_fail_valid, delta_p_fail_valid = get_confint(
+                num_failed_accepted[valid_mask], 
+                num_accepted[valid_mask]
+            )
+            p_fail[valid_mask] = p_fail_valid
+            delta_p_fail[valid_mask] = delta_p_fail_valid
+        
+        # For invalid cases (num_accepted == 0), p_fail and delta_p_fail remain 0
+
         return {
             "p_fail": p_fail,
+            "delta_p_fail": delta_p_fail,
             "p_abort": p_abort,
             "effective_avg_trials": effective_avg_trials,
             "num_accepted": num_accepted,
