@@ -68,25 +68,20 @@ def main():
                 config_name = f"mw{metric_windows}_ord{norm_order}_{value_type}"
                 print(f"\nConfiguration: {config_name}")
 
-                try:
-                    # Run batch post-selection analysis
-                    batch_results = batch_postselection_analysis(
-                        data_dir=data_dir,
-                        param_combinations=subdirs,
-                        cutoffs=cutoffs,
-                        metric_windows=metric_windows,
-                        norm_order=norm_order,
-                        value_type=value_type,
-                        num_jobs=postselection_config["num_jobs"],
-                        verbose=postselection_config["verbose"],
-                    )
+                # Run batch post-selection analysis
+                batch_results = batch_postselection_analysis(
+                    data_dir=data_dir,
+                    param_combinations=subdirs,
+                    cutoffs=cutoffs,
+                    metric_windows=metric_windows,
+                    norm_order=norm_order,
+                    value_type=value_type,
+                    num_jobs=postselection_config["num_jobs"],
+                    verbose=postselection_config["verbose"],
+                )
 
-                    # Store results
-                    postselection_results[config_name] = batch_results
-
-                except Exception as e:
-                    print(f"Error processing {config_name}: {e}")
-                    postselection_results[config_name] = {}
+                # Store results
+                postselection_results[config_name] = batch_results
 
     # =============================================================================
     # Results Saving

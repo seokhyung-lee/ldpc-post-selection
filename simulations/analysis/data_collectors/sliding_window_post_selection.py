@@ -499,7 +499,7 @@ def analyze_parameter_combination(
     # Parse parameters from combo string
     parts = param_combo.split("_")
     F = int(parts[-1][1:])  # Extract F from "F1"
-    T = int(parts[-3][1:])  # Extract T from "T12"
+    T = int(parts[-4][1:])  # Extract T from "T12"
 
     # Determine number of faults per window from data structure
     total_faults = committed_clusters_csr.shape[1]
