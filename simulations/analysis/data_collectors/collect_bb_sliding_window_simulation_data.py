@@ -15,8 +15,8 @@ if __name__ == "__main__":
     ascending_confidences = {}
 
     # Define aggregation types and their confidence directions
-    # aggregation_types = ["avg_window", "max_window", "committed"]
-    aggregation_types = ["committed"]
+    aggregation_types = ["avg_window", "max_window", "committed"]
+    # aggregation_types = ["committed"]
     # value_types = ["size", "llr"]
     value_types = ["llr"]
 
@@ -27,7 +27,7 @@ if __name__ == "__main__":
             ascending_confidences[metric_base] = False
 
     # Define norm orders to calculate
-    orders = [2]  # Can be extended to [0.5, 1, 2, np.inf]
+    orders = [1, 2, np.inf]  # Can be extended to [0.5, 1, 2, np.inf]
 
     # Data directory configuration
     data_dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
@@ -46,7 +46,7 @@ if __name__ == "__main__":
         ascending_confidences=ascending_confidences,
         orders=orders,
         decimals=4,
-        subdir=subdir,
+        subdirs=subdir,
         verbose=False,
         num_jobs=18,
         num_batches=18 * 10,

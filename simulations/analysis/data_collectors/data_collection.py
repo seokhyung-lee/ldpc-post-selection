@@ -301,7 +301,7 @@ def process_dataset(
     verbose: bool = False,
     dataset_type: Optional[str] = None,
     eval_windows: Optional[tuple[int, int]] = None,
-    subdir: Optional[str] = None,
+    subdirs: Optional[List[str]] = None,
     num_jobs: int = 1,
     num_batches: Optional[int] = None,
 ) -> None:
@@ -332,11 +332,12 @@ def process_dataset(
         This determines how directory structure is interpreted.
     eval_windows : Optional[tuple[int, int]], optional
         If provided, only consider windows from init_eval_window to final_eval_window for sliding window metrics.
-    subdir : Optional[str], optional
-        If provided, process only this specific subdirectory instead of all subdirectories.
-        Should be a relative path from data_dir to the target subdirectory.
-        For simple datasets: e.g., 'd13_T13_p0.001'. For HGP datasets: e.g., 'circuit_folder/circuit_name'.
-        If None, processes all subdirectories (default behavior).
+    subdirs : Optional[List[str]], optional
+        If provided, process only these specific subdirectories instead of all subdirectories.
+        Should be a list of relative paths from data_dir to the target subdirectories.
+        For simple datasets: e.g., ['d13_T13_p0.001', 'd15_T15_p0.002'].
+        For HGP datasets: e.g., ['circuit_folder/circuit_name1', 'circuit_folder/circuit_name2'].
+        If None or empty list, processes all subdirectories (default behavior).
     num_jobs : int, optional
         Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
         Currently only supported for committed cluster norm fraction calculations in sliding window decoding.
@@ -383,23 +384,27 @@ def process_dataset(
             print(f"Processing method: {method_name}")
 
             # Get raw data subdirectories (each corresponds to a parameter combination)
-            if subdir is not None:
-                # Process only the specified subdirectory
-                subdir_path = os.path.join(data_dir, subdir)
-                if dataset_type == "hgp":
-                    # For HGP datasets, subdir should be like "circuit_folder/circuit_name"
-                    # Extract circuit_folder and circuit_name from the path
-                    path_parts = subdir.split(os.sep)
-                    if len(path_parts) == 2:
-                        circuit_folder, circuit_name = path_parts
-                        param_combo_str = f"{circuit_folder}_{circuit_name}"
+            if subdirs is not None and len(subdirs) > 0:
+                # Process only the specified subdirectories
+                subdirs_info = []
+                for single_subdir in subdirs:
+                    subdir_path = os.path.join(data_dir, single_subdir)
+                    if dataset_type == "hgp":
+                        # For HGP datasets, subdir should be like "circuit_folder/circuit_name"
+                        # Extract circuit_folder and circuit_name from the path
+                        path_parts = single_subdir.split(os.sep)
+                        if len(path_parts) == 2:
+                            circuit_folder, circuit_name = path_parts
+                            param_combo_str = f"{circuit_folder}_{circuit_name}"
+                        else:
+                            param_combo_str = single_subdir.replace(os.sep, "_")
                     else:
-                        param_combo_str = subdir.replace(os.sep, "_")
-                else:
-                    # For non-HGP datasets, subdir name is the param_combo_str
-                    param_combo_str = subdir
-                
-                subdirs_info = [{"path": subdir_path, "param_combo_str": param_combo_str}]
+                        # For non-HGP datasets, subdir name is the param_combo_str
+                        param_combo_str = single_subdir
+
+                    subdirs_info.append(
+                        {"path": subdir_path, "param_combo_str": param_combo_str}
+                    )
             else:
                 # Process all subdirectories (original behavior)
                 subdirs_info = get_raw_data_subdirectories(data_dir, dataset_type)
