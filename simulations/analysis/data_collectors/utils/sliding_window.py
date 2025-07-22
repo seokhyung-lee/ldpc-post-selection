@@ -6,7 +6,7 @@ from scipy.sparse import csr_matrix
 import scipy.sparse as sp
 import igraph as ig
 from joblib import Parallel, delayed
-from src.ldpc_post_selection.cluster_tools import label_clusters_igraph
+from ldpc_post_selection.cluster_tools import label_clusters_igraph
 
 
 @numba.njit(fastmath=True, cache=True, parallel=True)

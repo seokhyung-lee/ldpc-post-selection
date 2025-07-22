@@ -293,8 +293,10 @@ class RealTimePostSelectionAnalyzer:
         """
         Vectorized calculation of effective trials for all samples and cutoffs.
 
-        Uses the formula: (window_exceeding_cutoff + 1) * F / T
-        For accepted samples, uses the total number of windows.
+        Effective trials calculation:
+        - Accepted samples: always 1.0
+        - Aborted at last window (abort_windows == num_windows - 1): 1.0
+        - Other aborted samples: (abort_window + 1) * F / T
 
         Parameters
         ----------
@@ -310,13 +312,17 @@ class RealTimePostSelectionAnalyzer:
         np.ndarray
             Shape (num_samples, num_cutoffs) - effective number of trials.
         """
-        # For aborted samples: (abort_window + 1) * F / T
-        # For accepted samples: total_windows * F / T
-        effective_trials = np.where(
-            accepted_mask,
-            self.num_windows * self.F / self.T,  # Accepted: use all windows
-            (abort_windows + 1) * self.F / self.T,  # Aborted: use abort window + 1
-        )
+        # For accepted samples: always 1.0
+        # For aborted samples: 1.0 if aborted at last window, otherwise (abort_window + 1) * F / T
+        
+        # Handle aborted samples with special case for last window
+        aborted_at_last_window = (abort_windows == self.num_windows - 1) & (~accepted_mask)
+        regular_aborted = (~accepted_mask) & (~aborted_at_last_window)
+        
+        effective_trials = np.zeros_like(abort_windows, dtype=np.float64)
+        effective_trials[accepted_mask] = 1.0  # Accepted samples: always 1.0
+        effective_trials[aborted_at_last_window] = 1.0  # Aborted at last window: 1.0
+        effective_trials[regular_aborted] = ((abort_windows[regular_aborted] + 1) * self.F / self.T)  # Other aborted: formula
 
         return effective_trials
 
@@ -359,7 +365,7 @@ class RealTimePostSelectionAnalyzer:
             - 'p_fail': Logical error rate (failures among accepted samples)
             - 'delta_p_fail': Margin of error for p_fail (95% confidence interval)
             - 'p_abort': Abort rate (fraction of samples aborted)
-            - 'effective_avg_trials': Average effective trials among accepted samples
+            - 'effective_avg_trials': Sum of all effective trials divided by number of accepted samples
             - 'num_accepted': Number of accepted samples
             - 'num_failed_accepted': Number of failed samples among accepted
         """
@@ -386,8 +392,8 @@ class RealTimePostSelectionAnalyzer:
                 failed_accepted = fails & accepted_samples
                 num_failed_accepted[i] = np.sum(failed_accepted)
 
-                # Average effective trials among accepted samples
-                effective_avg_trials[i] = np.mean(effective_trials[accepted_samples, i])
+                # Average effective trials: sum of all trials divided by number of accepted samples
+                effective_avg_trials[i] = np.sum(effective_trials[:, i]) / num_accepted[i]
             else:
                 num_failed_accepted[i] = 0
                 effective_avg_trials[i] = 0.0
