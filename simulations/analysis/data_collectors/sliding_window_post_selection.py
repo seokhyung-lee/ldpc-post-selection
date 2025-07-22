@@ -87,6 +87,7 @@ class RealTimePostSelectionAnalyzer:
         norm_order: float = 2.0,
         value_type: str = "llr",
         disable_cache: bool = False,
+        num_jobs: int = 1,
     ) -> Dict[str, np.ndarray]:
         """
         Perform ultra-efficient vectorized real-time post-selection analysis.
@@ -106,6 +107,8 @@ class RealTimePostSelectionAnalyzer:
             Type of cluster value calculation ("size" or "llr").
         disable_cache : bool, default=False
             If True, disable caching of computed metrics.
+        num_jobs : int, default=1
+            Number of parallel jobs for sample-level processing.
 
         Returns
         -------
@@ -132,7 +135,7 @@ class RealTimePostSelectionAnalyzer:
 
         # Step 1: Pre-compute metrics matrix for all samples and evaluatable windows
         metrics_matrix = self._compute_metrics_matrix_vectorized(
-            first_eval_window, metric_windows, norm_order, value_type, disable_cache
+            first_eval_window, metric_windows, norm_order, value_type, disable_cache, num_jobs
         )
 
         # Step 2: Vectorized cutoff evaluation using broadcasting
@@ -169,9 +172,25 @@ class RealTimePostSelectionAnalyzer:
         norm_order: float,
         value_type: str,
         disable_cache: bool,
+        num_jobs: int = 1,
     ) -> np.ndarray:
         """
         Pre-compute metrics matrix for all samples and evaluatable windows.
+
+        Parameters
+        ----------
+        first_eval_window : int
+            Index of first evaluatable window.
+        metric_windows : int
+            Number of windows for metric evaluation.
+        norm_order : float
+            Order for L_p norm calculation.
+        value_type : str
+            Type of cluster value calculation ("size" or "llr").
+        disable_cache : bool
+            If True, disable caching of computed metrics.
+        num_jobs : int, default=1
+            Number of parallel jobs for sample-level processing.
 
         Returns
         -------
@@ -206,7 +225,7 @@ class RealTimePostSelectionAnalyzer:
                 value_type=value_type,
                 eval_windows=eval_windows,
                 _benchmarking=False,
-                num_jobs=1,
+                num_jobs=num_jobs,
                 num_batches=None,
             )
 
@@ -467,6 +486,7 @@ def analyze_parameter_combination(
     metric_windows: int = 1,
     norm_order: float = 2.0,
     value_type: str = "llr",
+    num_jobs: int = 1,
 ) -> Dict[str, np.ndarray]:
     """
     Perform complete post-selection analysis for a single parameter combination.
@@ -485,6 +505,8 @@ def analyze_parameter_combination(
         Order for L_p norm calculation.
     value_type : str, default="llr"
         Type of cluster value calculation ("size" or "llr").
+    num_jobs : int, default=1
+        Number of parallel jobs for sample-level processing.
 
     Returns
     -------
@@ -523,6 +545,7 @@ def analyze_parameter_combination(
         metric_windows=metric_windows,
         norm_order=norm_order,
         value_type=value_type,
+        num_jobs=num_jobs,
     )
 
     # Compute comprehensive statistics
@@ -579,12 +602,11 @@ def batch_postselection_analysis(
         print(
             f"Starting batch post-selection analysis for {len(param_combinations)} combinations"
         )
-        print(f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs")
+        print(f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs for sample processing")
 
-    def process_single_combination(
-        param_combo: str,
-    ) -> Tuple[str, Dict[str, np.ndarray]]:
-        """Process a single parameter combination."""
+    # Process combinations sequentially (since typically only 1 subdir) but with parallel sample processing
+    results_list = []
+    for param_combo in param_combinations:
         if verbose:
             print(f"Processing {param_combo}...")
 
@@ -595,18 +617,9 @@ def batch_postselection_analysis(
             metric_windows=metric_windows,
             norm_order=norm_order,
             value_type=value_type,
+            num_jobs=num_jobs,  # Pass num_jobs for sample-level parallelization
         )
-        return param_combo, results
-
-    # Process combinations in parallel
-    if num_jobs > 1:
-        results_list = Parallel(n_jobs=num_jobs)(
-            delayed(process_single_combination)(combo) for combo in param_combinations
-        )
-    else:
-        results_list = [
-            process_single_combination(combo) for combo in param_combinations
-        ]
+        results_list.append((param_combo, results))
 
     # Convert to dictionary
     results_dict = {combo: results for combo, results in results_list}
