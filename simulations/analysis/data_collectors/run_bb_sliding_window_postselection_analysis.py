@@ -36,10 +36,10 @@ def main():
 
     # Configuration for post-selection analysis
     postselection_config = {
-        "metric_windows": [3],  # Different window sizes to test
-        "norm_orders": [2],  # L2 norm (can extend to [1.0, 2.0, np.inf])
-        "value_types": ["llr"],  # Focus on LLR-based analysis
-        "num_jobs": 18,  # Parallel processing
+        "metric_windows": [3, 5, 7],
+        "norm_orders": [2],
+        "value_types": ["llr"],
+        "num_jobs": 18,
         "verbose": True,
     }
 
@@ -48,7 +48,7 @@ def main():
     # =============================================================================
 
     # Define cutoff array for post-selection analysis
-    cutoffs = np.logspace(-3, -1, 20).round(6)
+    cutoffs = np.logspace(np.log10(0.004), -1, 10).round(6)
 
     print(
         f"Using cutoffs: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"
@@ -65,7 +65,7 @@ def main():
         for norm_order in postselection_config["norm_orders"]:
             for value_type in postselection_config["value_types"]:
 
-                config_name = f"mw{metric_windows}_ord{norm_order}_{value_type}"
+                config_name = f"mw{metric_windows}_{value_type}_norm_frac_{norm_order}"
                 print(f"\nConfiguration: {config_name}")
 
                 # Run batch post-selection analysis
@@ -95,67 +95,29 @@ def main():
         if not batch_results:
             continue
 
-        # Create directory structure for this config
-        config_dir = base_results_dir / config_name / "bb"
-        config_dir.mkdir(parents=True, exist_ok=True)
-
         # Save each subdir's results separately
         for subdir, results in batch_results.items():
             if not results:
                 continue
 
-            # Save individual subdir results
-            subdir_path = config_dir / f"{subdir}.pkl"
-            with open(subdir_path, "wb") as f:
+            # Create directory structure for this subdir
+            subdir_dir = base_results_dir / "bb" / subdir
+            subdir_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save individual config results
+            config_path = subdir_dir / f"{config_name}.pkl"
+            with open(config_path, "wb") as f:
                 pickle.dump(results, f)
 
-            saved_files.append(str(subdir_path))
-            print(f"Saved {config_name}/{subdir} results to: {subdir_path}")
+            saved_files.append(str(config_path))
+            print(f"Saved {config_name}/{subdir} results to: {config_path}")
 
     print(f"\nPost-selection analysis complete! Saved {len(saved_files)} result files.")
 
     # =============================================================================
     # Summary Generation
     # =============================================================================
-
-    # Generate summary statistics
-    print("\n" + "=" * 60)
-    print("POST-SELECTION ANALYSIS SUMMARY")
     print("=" * 60)
-
-    for config_name, batch_results in postselection_results.items():
-        if not batch_results:
-            continue
-
-        print(f"\n{config_name}:")
-
-        for param_combo, results in batch_results.items():
-            if not results:
-                continue
-
-            cutoffs = results["cutoffs"]
-            p_abort = results["p_abort"]
-            effective_avg_trials = results["effective_avg_trials"]
-
-            # Find interesting operating points
-            low_abort_idx = np.argmax(p_abort <= 0.05)  # ~5% abort rate
-            med_abort_idx = np.argmax(p_abort <= 0.1)  # ~10% abort rate
-            high_abort_idx = np.argmax(p_abort <= 0.2)  # ~20% abort rate
-
-            print(f"  {param_combo}: Operating points")
-            for desc, idx in [
-                ("5% abort", low_abort_idx),
-                ("10% abort", med_abort_idx),
-                ("20% abort", high_abort_idx),
-            ]:
-                if idx > 0 and idx < len(cutoffs):
-                    p_fail_val = results["p_fail"][idx]
-                    delta_p_fail_val = results["delta_p_fail"][idx]
-                    print(
-                        f"    {desc}: cutoff={cutoffs[idx]:.4f}, "
-                        f"LER={p_fail_val:.2e}±{delta_p_fail_val:.2e}, "
-                        f"trials={effective_avg_trials[idx]:.2f}"
-                    )
 
     print(f"\nReal-time post-selection analysis complete!")
     print(f"Results directory: {base_results_dir}")
@@ -166,14 +128,14 @@ def main():
     # Show the organized file structure
     if saved_files:
         print("\nSaved file structure:")
-        current_config = None
+        current_subdir = None
         for file_path in saved_files:
-            config_part = str(Path(file_path).parent.parent.name)  # Extract config name
-            subdir_name = str(Path(file_path).stem)  # Extract subdir name
-            if config_part != current_config:
-                print(f"  {config_part}/")
-                current_config = config_part
-            print(f"    bb/{subdir_name}.pkl")
+            subdir_name = str(Path(file_path).parent.name)  # Extract subdir name
+            config_name = str(Path(file_path).stem)  # Extract config name
+            if subdir_name != current_subdir:
+                print(f"  bb/{subdir_name}/")
+                current_subdir = subdir_name
+            print(f"    {config_name}.pkl")
 
 
 if __name__ == "__main__":
