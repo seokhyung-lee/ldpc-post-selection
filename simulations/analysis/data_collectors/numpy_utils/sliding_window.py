@@ -1,7 +1,7 @@
 import numba
 import numpy as np
 import time
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Union
 from scipy.sparse import csr_matrix
 import scipy.sparse as sp
 import igraph as ig
@@ -789,14 +789,14 @@ def calculate_realtime_metrics_vectorized(
     first_eval_window: int,
     metric_windows: int,
     norm_order: float,
-    value_type_int: int  # 0 = size, 1 = llr
+    value_type_int: int,  # 0 = size, 1 = llr
 ) -> np.ndarray:
     """
     Ultra-optimized Numba kernel for real-time metric calculation.
-    
+
     Calculates committed cluster norm fractions for all samples and evaluatable
     windows simultaneously using advanced vectorization and parallel processing.
-    
+
     Parameters
     ----------
     committed_clusters_data, committed_clusters_indices, committed_clusters_indptr : np.ndarray
@@ -815,7 +815,7 @@ def calculate_realtime_metrics_vectorized(
         Order for L_p norm calculation.
     value_type_int : int
         0 for size calculations, 1 for LLR calculations.
-        
+
     Returns
     -------
     np.ndarray
@@ -823,10 +823,10 @@ def calculate_realtime_metrics_vectorized(
     """
     num_eval_windows = num_windows - first_eval_window
     metrics_matrix = np.zeros((num_samples, num_eval_windows), dtype=np.float64)
-    
+
     if num_eval_windows <= 0:
         return metrics_matrix
-    
+
     # Pre-compute LLR values if needed
     if value_type_int == 1:  # LLR
         bit_llrs = np.log((1.0 - priors) / priors)
@@ -834,46 +834,46 @@ def calculate_realtime_metrics_vectorized(
     else:
         bit_llrs = np.zeros_like(priors)
         total_llr_sum = float(num_faults_per_window)
-    
+
     # Process each evaluatable window
     for eval_idx in numba.prange(num_eval_windows):
         window_idx = first_eval_window + eval_idx
-        
+
         # Define evaluation window range
         eval_start = max(0, window_idx - metric_windows + 1)
         eval_end = window_idx + 1
-        
+
         # Process each sample for this evaluation window
         for sample_idx in range(num_samples):
             sample_start = committed_clusters_indptr[sample_idx]
             sample_end = committed_clusters_indptr[sample_idx + 1]
-            
+
             if sample_end <= sample_start:
                 metrics_matrix[sample_idx, eval_idx] = 0.0
                 continue
-                
+
             # Find max cluster ID across evaluation windows
             max_cluster_id = 0
             for j in range(sample_start, sample_end):
                 col_idx = committed_clusters_indices[j]
                 window_id = col_idx // num_faults_per_window
-                
+
                 if eval_start <= window_id < eval_end:
                     cluster_id = int(committed_clusters_data[j])
                     if cluster_id > max_cluster_id:
                         max_cluster_id = cluster_id
-            
+
             if max_cluster_id == 0:
                 metrics_matrix[sample_idx, eval_idx] = 0.0
                 continue
-                
+
             # Calculate cluster values
             cluster_values = np.zeros(max_cluster_id + 1, dtype=np.float64)
-            
+
             for j in range(sample_start, sample_end):
                 col_idx = committed_clusters_indices[j]
                 window_id = col_idx // num_faults_per_window
-                
+
                 if eval_start <= window_id < eval_end:
                     cluster_id = int(committed_clusters_data[j])
                     if cluster_id > 0:
@@ -882,7 +882,7 @@ def calculate_realtime_metrics_vectorized(
                             cluster_values[cluster_id] += bit_llrs[fault_idx]
                         else:  # Size
                             cluster_values[cluster_id] += 1.0
-            
+
             # Calculate norm
             norm_val = 0.0
             if norm_order == 1.0:
@@ -907,13 +907,13 @@ def calculate_realtime_metrics_vectorized(
                         sum_pow += v**norm_order
                 if sum_pow > 0:
                     norm_val = sum_pow ** (1.0 / norm_order)
-            
+
             # Calculate fraction
             if total_llr_sum > 0:
                 metrics_matrix[sample_idx, eval_idx] = norm_val / total_llr_sum
             else:
                 metrics_matrix[sample_idx, eval_idx] = 0.0
-                
+
     return metrics_matrix
 
 
@@ -925,14 +925,14 @@ def batch_postselection_analysis(
     norm_order: float = 2.0,
     value_type: str = "llr",
     num_jobs: int = 1,
-    verbose: bool = True
+    verbose: bool = True,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
     High-performance batch processing of multiple parameter combinations.
-    
+
     Efficiently processes multiple sliding window parameter combinations in parallel
     for comprehensive post-selection analysis with arbitrary cutoff arrays.
-    
+
     Parameters
     ----------
     data_dir : str
@@ -951,7 +951,7 @@ def batch_postselection_analysis(
         Number of parallel jobs for batch processing.
     verbose : bool, default=True
         Whether to print progress information.
-        
+
     Returns
     -------
     Dict[str, Dict[str, np.ndarray]]
@@ -959,49 +959,56 @@ def batch_postselection_analysis(
         Structure: {param_combo: {result_key: result_array}}
     """
     if verbose:
-        print(f"Starting batch post-selection analysis for {len(param_combinations)} combinations")
+        print(
+            f"Starting batch post-selection analysis for {len(param_combinations)} combinations"
+        )
         print(f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs")
-    
+
     # Import here to avoid circular imports
     from ..sliding_window_post_selection import analyze_parameter_combination
-    
-    def process_single_combination(param_combo: str) -> Tuple[str, Dict[str, np.ndarray]]:
+
+    def process_single_combination(
+        param_combo: str,
+    ) -> Tuple[str, Dict[str, np.ndarray]]:
         """Process a single parameter combination."""
         try:
             if verbose:
                 print(f"Processing {param_combo}...")
-                
+
             results = analyze_parameter_combination(
                 data_dir=data_dir,
                 param_combo=param_combo,
                 cutoffs=cutoffs,
                 metric_windows=metric_windows,
                 norm_order=norm_order,
-                value_type=value_type
+                value_type=value_type,
             )
             return param_combo, results
-            
+
         except Exception as e:
             if verbose:
                 print(f"Error processing {param_combo}: {e}")
             return param_combo, {}
-    
+
     # Process combinations in parallel
     if num_jobs > 1:
         results_list = Parallel(n_jobs=num_jobs)(
-            delayed(process_single_combination)(combo)
-            for combo in param_combinations
+            delayed(process_single_combination)(combo) for combo in param_combinations
         )
     else:
-        results_list = [process_single_combination(combo) for combo in param_combinations]
-    
+        results_list = [
+            process_single_combination(combo) for combo in param_combinations
+        ]
+
     # Convert to dictionary
     results_dict = {combo: results for combo, results in results_list}
-    
+
     if verbose:
         successful = sum(1 for _, results in results_list if results)
-        print(f"Successfully processed {successful}/{len(param_combinations)} combinations")
-    
+        print(
+            f"Successfully processed {successful}/{len(param_combinations)} combinations"
+        )
+
     return results_dict
 
 
@@ -1010,14 +1017,14 @@ def create_cutoff_arrays(
     fine_points: int = 100,
     coarse_range: Tuple[float, float] = (1e-4, 0.5),
     coarse_points: int = 20,
-    log_scale: bool = True
+    log_scale: bool = True,
 ) -> Dict[str, np.ndarray]:
     """
     Create optimized cutoff arrays for parameter sweeps.
-    
+
     Generates multiple cutoff arrays optimized for different analysis scenarios,
     allowing efficient exploration of the parameter space.
-    
+
     Parameters
     ----------
     fine_range : Tuple[float, float], default=(0.001, 0.1)
@@ -1030,36 +1037,40 @@ def create_cutoff_arrays(
         Number of points in coarse array.
     log_scale : bool, default=True
         Whether to use logarithmic spacing for coarse array.
-        
+
     Returns
     -------
     Dict[str, np.ndarray]
         Dictionary containing different cutoff arrays:
         - 'fine': Fine-grained linear spacing
-        - 'coarse': Coarse logarithmic or linear spacing  
+        - 'coarse': Coarse logarithmic or linear spacing
         - 'ultra_fine': Extra fine spacing around typical values
         - 'broad': Very broad range with logarithmic spacing
     """
     cutoff_arrays = {}
-    
+
     # Fine-grained linear spacing
-    cutoff_arrays['fine'] = np.linspace(fine_range[0], fine_range[1], fine_points)
-    
+    cutoff_arrays["fine"] = np.linspace(fine_range[0], fine_range[1], fine_points)
+
     # Coarse spacing (log or linear)
     if log_scale:
-        cutoff_arrays['coarse'] = np.logspace(
+        cutoff_arrays["coarse"] = np.logspace(
             np.log10(coarse_range[0]), np.log10(coarse_range[1]), coarse_points
         )
     else:
-        cutoff_arrays['coarse'] = np.linspace(coarse_range[0], coarse_range[1], coarse_points)
-    
+        cutoff_arrays["coarse"] = np.linspace(
+            coarse_range[0], coarse_range[1], coarse_points
+        )
+
     # Ultra-fine spacing around typical values
     typical_low, typical_high = 0.005, 0.05
-    cutoff_arrays['ultra_fine'] = np.linspace(typical_low, typical_high, fine_points * 2)
-    
+    cutoff_arrays["ultra_fine"] = np.linspace(
+        typical_low, typical_high, fine_points * 2
+    )
+
     # Broad range with logarithmic spacing
-    cutoff_arrays['broad'] = np.logspace(-5, 0, coarse_points * 2)  # 1e-5 to 1.0
-    
+    cutoff_arrays["broad"] = np.logspace(-5, 0, coarse_points * 2)  # 1e-5 to 1.0
+
     return cutoff_arrays
 
 
@@ -1067,14 +1078,14 @@ def optimize_postselection_parameters(
     results: Dict[str, np.ndarray],
     target_abort_rate: float = 0.1,
     target_effective_trials: float = 1.0,
-    optimization_metric: str = "p_fail"
+    optimization_metric: str = "p_fail",
 ) -> Dict[str, Union[float, int]]:
     """
     Find optimal post-selection parameters based on target constraints.
-    
+
     Analyzes post-selection results to find optimal cutoff values that achieve
     target performance while minimizing logical error rates.
-    
+
     Parameters
     ----------
     results : Dict[str, np.ndarray]
@@ -1085,7 +1096,7 @@ def optimize_postselection_parameters(
         Target maximum effective average trials.
     optimization_metric : str, default="p_fail"
         Metric to optimize ("p_fail" or "effective_avg_trials").
-        
+
     Returns
     -------
     Dict[str, Union[float, int]]
@@ -1096,25 +1107,25 @@ def optimize_postselection_parameters(
         - 'achieved_p_abort': Abort rate at optimal cutoff
         - 'achieved_effective_trials': Effective trials at optimal cutoff
     """
-    cutoffs = results['cutoffs']
-    p_fail = results['p_fail'] 
-    p_abort = results['p_abort']
-    effective_avg_trials = results['effective_avg_trials']
-    
+    cutoffs = results["cutoffs"]
+    p_fail = results["p_fail"]
+    p_abort = results["p_abort"]
+    effective_avg_trials = results["effective_avg_trials"]
+
     # Find valid indices that meet constraints
     valid_mask = (
-        (p_abort <= target_abort_rate) & 
-        (effective_avg_trials <= target_effective_trials) &
-        (results['num_accepted'] > 0)  # Ensure we have accepted samples
+        (p_abort <= target_abort_rate)
+        & (effective_avg_trials <= target_effective_trials)
+        & (results["num_accepted"] > 0)  # Ensure we have accepted samples
     )
-    
+
     if not np.any(valid_mask):
         # No valid solutions - return least constraining option
         best_idx = np.argmin(p_abort)  # Minimize abort rate as fallback
     else:
         # Find optimal solution among valid candidates
         valid_indices = np.where(valid_mask)[0]
-        
+
         if optimization_metric == "p_fail":
             # Minimize logical error rate among valid solutions
             valid_p_fail = p_fail[valid_indices]
@@ -1125,12 +1136,14 @@ def optimize_postselection_parameters(
             valid_trials = effective_avg_trials[valid_indices]
             best_valid_idx = np.argmin(valid_trials)
             best_idx = valid_indices[best_valid_idx]
-    
+
     return {
-        'optimal_cutoff': cutoffs[best_idx],
-        'optimal_index': best_idx,
-        'achieved_p_fail': p_fail[best_idx],
-        'achieved_p_abort': p_abort[best_idx], 
-        'achieved_effective_trials': effective_avg_trials[best_idx],
-        'meets_constraints': bool(valid_mask[best_idx]) if len(valid_mask) > best_idx else False
+        "optimal_cutoff": cutoffs[best_idx],
+        "optimal_index": best_idx,
+        "achieved_p_fail": p_fail[best_idx],
+        "achieved_p_abort": p_abort[best_idx],
+        "achieved_effective_trials": effective_avg_trials[best_idx],
+        "meets_constraints": (
+            bool(valid_mask[best_idx]) if len(valid_mask) > best_idx else False
+        ),
     }
