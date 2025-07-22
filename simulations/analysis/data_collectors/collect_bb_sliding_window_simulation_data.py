@@ -27,7 +27,7 @@ if __name__ == "__main__":
             ascending_confidences[metric_base] = False
 
     # Define norm orders to calculate
-    orders = [1, 2, np.inf]  # Can be extended to [0.5, 1, 2, np.inf]
+    orders = [2]  # Can be extended to [0.5, 1, 2, np.inf]
 
     # Data directory configuration
     data_dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     data_dir = str(DATA_DIR / data_dir_name)
 
-    subdir = "n144_T12_p0.003_W3_F1"
+    subdirs = ["n144_T12_p0.003_W3_F1", "n144_T12_p0.005_W3_F1"]
 
     # Process sliding window BB code data
     print("Processing sliding window BB code data...")
@@ -46,10 +46,10 @@ if __name__ == "__main__":
         ascending_confidences=ascending_confidences,
         orders=orders,
         decimals=4,
-        subdirs=subdir,
+        subdirs=subdirs,
         verbose=False,
-        num_jobs=18,
-        num_batches=18 * 10,
+        # num_jobs=18,
+        # num_batches=18 * 10,
     )
 
     print("\nSliding window data collection complete!")

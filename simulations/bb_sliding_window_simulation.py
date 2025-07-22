@@ -172,15 +172,17 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [1e-3]
-    nlist = [144]  # [72, 108, 144, 288]
-
-    # Sliding window parameters
+    # Parameters
     window_size = 3
     commit_size = 1
+    prms = []  # (n, T, p, W, F)
+    for n in [144]:
+        for T in range(3, 25, 3):
+            for p in [3e-3]:
+                prms.append((n, T, p, window_size, commit_size))
 
-    shots_per_batch = round(1e7)
-    total_shots = round(1e9)
+    shots_per_batch = round(2e6)
+    total_shots = round(1e7)
     n_jobs = 18
     repeat = 10
     dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
@@ -196,30 +198,25 @@ if __name__ == "__main__":
     data_dir = os.path.join(current_dir, f"data/{dir_name}")
     os.makedirs(data_dir, exist_ok=True)
 
-    print("nlist =", nlist)
-    print("plist =", plist)
     print("window_size =", window_size)
     print("commit_size =", commit_size)
     print("decoder_prms =", decoder_prms)
 
     print(f"\n==== Starting sliding window simulations up to {total_shots} shots ====")
-    for n in nlist:
-        T = get_BB_distance(n)
-
-        for i_p, p in enumerate(plist):
-            simulate(
-                shots=total_shots,
-                p=p,
-                n=n,
-                T=T,
-                window_size=window_size,
-                commit_size=commit_size,
-                data_dir=data_dir,
-                n_jobs=n_jobs,
-                repeat=repeat,
-                shots_per_batch=shots_per_batch,
-                decoder_prms=decoder_prms,
-            )
+    for n, T, p, W, F in prms:
+        simulate(
+            shots=total_shots,
+            p=p,
+            n=n,
+            T=T,
+            window_size=W,
+            commit_size=F,
+            data_dir=data_dir,
+            n_jobs=n_jobs,
+            repeat=repeat,
+            shots_per_batch=shots_per_batch,
+            decoder_prms=decoder_prms,
+        )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==== Sliding window simulations completed ({t0}) ====")
