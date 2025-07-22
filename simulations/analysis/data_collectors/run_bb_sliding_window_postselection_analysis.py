@@ -37,7 +37,7 @@ def main():
     # Configuration for post-selection analysis
     postselection_config = {
         "metric_windows": [3],  # Different window sizes to test
-        "norm_orders": [2.0],  # L2 norm (can extend to [1.0, 2.0, np.inf])
+        "norm_orders": [2],  # L2 norm (can extend to [1.0, 2.0, np.inf])
         "value_types": ["llr"],  # Focus on LLR-based analysis
         "num_jobs": 18,  # Parallel processing
         "verbose": True,
@@ -87,17 +87,32 @@ def main():
     # Results Saving
     # =============================================================================
 
-    # Save comprehensive post-selection results
-    results_dir = DATA_DIR / "post_selection_analysis"
-    results_dir.mkdir(exist_ok=True)
+    # Save results for each subdir separately
+    base_results_dir = DATA_DIR / "real_time_post_selection"
+    saved_files = []
 
-    results_filename = f"bb_sliding_window_postselection_results_{dataset_name}.pkl"
-    results_path = results_dir / results_filename
+    for config_name, batch_results in postselection_results.items():
+        if not batch_results:
+            continue
 
-    with open(results_path, "wb") as f:
-        pickle.dump(postselection_results, f)
+        # Create directory structure for this config
+        config_dir = base_results_dir / config_name / "bb"
+        config_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nPost-selection results saved to: {results_path}")
+        # Save each subdir's results separately
+        for subdir, results in batch_results.items():
+            if not results:
+                continue
+
+            # Save individual subdir results
+            subdir_path = config_dir / f"{subdir}.pkl"
+            with open(subdir_path, "wb") as f:
+                pickle.dump(results, f)
+
+            saved_files.append(str(subdir_path))
+            print(f"Saved {config_name}/{subdir} results to: {subdir_path}")
+
+    print(f"\nPost-selection analysis complete! Saved {len(saved_files)} result files.")
 
     # =============================================================================
     # Summary Generation
@@ -143,10 +158,22 @@ def main():
                     )
 
     print(f"\nReal-time post-selection analysis complete!")
-    print(f"Results available in: {results_path}")
+    print(f"Results directory: {base_results_dir}")
     print(
-        f"Processed {len([r for r in postselection_results.values() if r])} successful configurations"
+        f"Saved {len(saved_files)} result files across {len([r for r in postselection_results.values() if r])} configurations"
     )
+
+    # Show the organized file structure
+    if saved_files:
+        print("\nSaved file structure:")
+        current_config = None
+        for file_path in saved_files:
+            config_part = str(Path(file_path).parent.parent.name)  # Extract config name
+            subdir_name = str(Path(file_path).stem)  # Extract subdir name
+            if config_part != current_config:
+                print(f"  {config_part}/")
+                current_config = config_part
+            print(f"    bb/{subdir_name}.pkl")
 
 
 if __name__ == "__main__":
