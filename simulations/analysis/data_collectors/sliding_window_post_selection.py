@@ -491,6 +491,250 @@ def load_sliding_window_data(
     return committed_clusters_csr, committed_faults, priors, H, fails_combined
 
 
+def load_single_batch_data(
+    data_dir: str, param_combo: str, batch_dir_name: str
+) -> Tuple[csr_matrix, List[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load sliding window simulation data for a single batch.
+
+    Parameters
+    ----------
+    data_dir : str
+        Path to the raw sliding window data directory.
+    param_combo : str
+        Parameter combination string (e.g., "n144_T12_p0.003_W3_F1").
+    batch_dir_name : str
+        Name of the specific batch directory to load (e.g., "batch_1_1000000").
+
+    Returns
+    -------
+    Tuple containing:
+        - committed_clusters_csr: CSR matrix of committed cluster assignments for this batch
+        - committed_faults: List of committed fault arrays per window
+        - priors: Prior error probabilities
+        - H: Parity check matrix
+        - fails: Boolean array of decoding failures for this batch
+    """
+    param_dir = Path(data_dir) / param_combo
+    batch_dir = param_dir / batch_dir_name
+
+    if not batch_dir.exists():
+        raise FileNotFoundError(f"Batch directory not found: {batch_dir}")
+
+    # Load basic matrices (shared across all batches)
+    H = sp.load_npz(param_dir / "H.npz").toarray()
+    priors = np.load(param_dir / "priors.npy")
+    committed_faults_data = np.load(
+        param_dir / "committed_faults.npz", allow_pickle=True
+    )
+    committed_faults = [
+        committed_faults_data[f"arr_{i}"]
+        for i in range(len(committed_faults_data.files))
+    ]
+
+    # Load data for this specific batch
+    committed_clusters = sp.load_npz(batch_dir / "committed_clusters.npz")
+    fails = np.load(batch_dir / "fails.npy")
+
+    return committed_clusters, committed_faults, priors, H, fails
+
+
+def combine_batch_statistics(
+    batch_stats_list: List[Dict[str, np.ndarray]]
+) -> Dict[str, np.ndarray]:
+    """
+    Combine post-selection statistics from multiple batches.
+
+    Parameters
+    ----------
+    batch_stats_list : List[Dict[str, np.ndarray]]
+        List of statistics dictionaries from individual batches.
+        Each dictionary should contain statistics from compute_postselection_statistics().
+
+    Returns
+    -------
+    Dict[str, np.ndarray]
+        Combined statistics across all batches:
+        - 'p_fail': Logical error rate (failures among accepted samples)
+        - 'delta_p_fail': Margin of error for p_fail (95% confidence interval)
+        - 'p_abort': Abort rate (fraction of samples aborted)
+        - 'effective_avg_trials': Weighted average of effective trials across batches
+        - 'num_accepted': Total number of accepted samples
+        - 'num_failed_accepted': Total number of failed samples among accepted
+        - 'total_samples': Total number of samples across all batches
+    """
+    if not batch_stats_list:
+        raise ValueError("batch_stats_list cannot be empty")
+
+    # Get cutoffs from first batch (should be the same for all batches)
+    cutoffs = batch_stats_list[0]["cutoffs"]
+    num_cutoffs = len(cutoffs)
+
+    # Initialize combined arrays
+    total_num_accepted = np.zeros(num_cutoffs, dtype=int)
+    total_num_failed_accepted = np.zeros(num_cutoffs, dtype=int)
+    total_samples = 0
+    
+    # Arrays to store effective trials weighted by number of accepted samples
+    weighted_effective_trials_sum = np.zeros(num_cutoffs, dtype=np.float64)
+
+    # Sum across all batches
+    for batch_stats in batch_stats_list:
+        total_num_accepted += batch_stats["num_accepted"]
+        total_num_failed_accepted += batch_stats["num_failed_accepted"]
+        
+        # For effective_avg_trials, we need to weight by the number of accepted samples
+        # batch_stats["effective_avg_trials"] is already the average for that batch
+        # So we multiply by num_accepted to get the total effective trials for that batch
+        batch_total_effective_trials = (
+            batch_stats["effective_avg_trials"] * batch_stats["num_accepted"]
+        )
+        weighted_effective_trials_sum += batch_total_effective_trials
+        
+        # Count total samples directly from batch sample count
+        total_samples += batch_stats["batch_samples"]
+        
+    # Calculate combined effective average trials
+    effective_avg_trials = np.where(
+        total_num_accepted > 0,
+        weighted_effective_trials_sum / total_num_accepted,
+        0.0
+    )
+
+    # Calculate combined p_fail and confidence intervals using get_confint
+    p_fail = np.zeros(num_cutoffs, dtype=np.float64)
+    delta_p_fail = np.zeros(num_cutoffs, dtype=np.float64)
+    
+    # Only calculate confidence intervals where we have accepted samples
+    valid_mask = total_num_accepted > 0
+    if np.any(valid_mask):
+        p_fail_valid, delta_p_fail_valid = get_confint(
+            total_num_failed_accepted[valid_mask], total_num_accepted[valid_mask]
+        )
+        p_fail[valid_mask] = p_fail_valid
+        delta_p_fail[valid_mask] = delta_p_fail_valid
+
+    # Calculate combined abort rate
+    p_abort = 1.0 - (total_num_accepted / total_samples) if total_samples > 0 else np.ones(num_cutoffs)
+
+    return {
+        "p_fail": p_fail,
+        "delta_p_fail": delta_p_fail,
+        "p_abort": p_abort,
+        "effective_avg_trials": effective_avg_trials,
+        "num_accepted": total_num_accepted,
+        "num_failed_accepted": total_num_failed_accepted,
+        "cutoffs": cutoffs,
+        "total_samples": total_samples,
+    }
+
+
+def analyze_parameter_combination_batch_by_batch(
+    data_dir: str,
+    param_combo: str,
+    cutoffs: np.ndarray,
+    metric_windows: int = 1,
+    norm_order: float = 2.0,
+    value_type: str = "llr",
+    num_jobs: int = 1,
+) -> Dict[str, np.ndarray]:
+    """
+    Perform batch-by-batch post-selection analysis for a single parameter combination.
+    
+    This function processes each batch individually to avoid memory issues with large datasets.
+    For each batch, it loads data, computes statistics, stores only the statistics,
+    and deletes the raw data from memory before processing the next batch.
+
+    Parameters
+    ----------
+    data_dir : str
+        Path to the raw sliding window data directory.
+    param_combo : str
+        Parameter combination string (e.g., "n144_T12_p0.003_W3_F1").
+    cutoffs : np.ndarray
+        Array of cutoff values to analyze.
+    metric_windows : int, default=1
+        Number of windows for metric evaluation.
+    norm_order : float, default=2.0
+        Order for L_p norm calculation.
+    value_type : str, default="llr"
+        Type of cluster value calculation ("size" or "llr").
+    num_jobs : int, default=1
+        Number of parallel jobs for sample-level processing.
+
+    Returns
+    -------
+    Dict[str, np.ndarray]
+        Combined post-selection statistics across all batches.
+    """
+    param_dir = Path(data_dir) / param_combo
+
+    # Find all batch directories
+    batch_dirs = [
+        d for d in param_dir.iterdir() if d.is_dir() and d.name.startswith("batch_")
+    ]
+
+    if not batch_dirs:
+        raise FileNotFoundError(f"No batch directories found in {param_dir}")
+
+    # Parse parameters from combo string (needed for analyzer initialization)
+    parts = param_combo.split("_")
+    F = int(parts[-1][1:])  # Extract F from "F1"
+    T = int(parts[-4][1:])  # Extract T from "T12"
+
+    batch_stats_list = []
+
+    for batch_dir in sorted(batch_dirs):
+        print(f"Processing batch: {batch_dir.name}")
+        
+        # Load data for this batch only
+        committed_clusters_csr, committed_faults, priors, H, fails = (
+            load_single_batch_data(data_dir, param_combo, batch_dir.name)
+        )
+
+        # Determine number of faults per window from data structure
+        total_faults = committed_clusters_csr.shape[1]
+        num_windows = len(committed_faults)
+        num_faults_per_window = total_faults // num_windows
+
+        # Create analyzer for this batch
+        analyzer = RealTimePostSelectionAnalyzer(
+            committed_clusters_csr=committed_clusters_csr,
+            committed_faults=committed_faults,
+            priors=priors,
+            H=H,
+            F=F,
+            T=T,
+            num_faults_per_window=num_faults_per_window,
+        )
+
+        # Perform vectorized analysis
+        results = analyzer.analyze_postselection_vectorized(
+            cutoffs=cutoffs,
+            metric_windows=metric_windows,
+            norm_order=norm_order,
+            value_type=value_type,
+            num_jobs=num_jobs,
+        )
+
+        # Compute statistics for this batch
+        batch_stats = analyzer.compute_postselection_statistics(results, fails)
+        # Add batch sample count for accurate total sample tracking
+        batch_stats["batch_samples"] = analyzer.num_samples
+        batch_stats_list.append(batch_stats)
+
+        # Clear memory - delete large objects
+        del committed_clusters_csr, committed_faults, priors, H, fails
+        del analyzer, results
+        
+        print(f"Completed batch: {batch_dir.name}")
+
+    # Combine statistics from all batches
+    combined_stats = combine_batch_statistics(batch_stats_list)
+    
+    return combined_stats
+
+
 def analyze_parameter_combination(
     data_dir: str,
     param_combo: str,
@@ -577,13 +821,14 @@ def batch_postselection_analysis(
     norm_order: float = 2.0,
     value_type: str = "llr",
     num_jobs: int = 1,
+    batch_mode: bool = False,
     verbose: bool = True,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
     High-performance batch processing of multiple parameter combinations.
 
-    Efficiently processes multiple sliding window parameter combinations in parallel
-    for comprehensive post-selection analysis with arbitrary cutoff arrays.
+    Efficiently processes multiple sliding window parameter combinations with
+    support for memory-efficient batch-by-batch processing for large datasets.
 
     Parameters
     ----------
@@ -600,7 +845,12 @@ def batch_postselection_analysis(
     value_type : str, default="llr"
         Type of cluster value calculation ("size" or "llr").
     num_jobs : int, default=1
-        Number of parallel jobs for batch processing.
+        Number of parallel jobs for sample-level processing.
+    batch_mode : bool, default=False
+        If True, use batch-by-batch processing to handle large datasets that
+        exceed memory capacity. Each batch is processed individually with
+        statistics combined at the end. If False, load all batches at once
+        (original behavior).
     verbose : bool, default=True
         Whether to print progress information.
 
@@ -611,12 +861,15 @@ def batch_postselection_analysis(
         Structure: {param_combo: {result_key: result_array}}
     """
     if verbose:
+        mode_str = "batch-by-batch" if batch_mode else "all-at-once"
         print(
-            f"Starting batch post-selection analysis for {len(param_combinations)} combinations"
+            f"Starting {mode_str} post-selection analysis for {len(param_combinations)} combinations"
         )
         print(
             f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs for sample processing"
         )
+        if batch_mode:
+            print("Using memory-efficient batch-by-batch processing mode")
 
     # Process combinations sequentially (since typically only 1 subdir) but with parallel sample processing
     results_list = []
@@ -624,15 +877,28 @@ def batch_postselection_analysis(
         if verbose:
             print(f"Processing {param_combo}...")
 
-        results = analyze_parameter_combination(
-            data_dir=data_dir,
-            param_combo=param_combo,
-            cutoffs=cutoffs,
-            metric_windows=metric_windows,
-            norm_order=norm_order,
-            value_type=value_type,
-            num_jobs=num_jobs,  # Pass num_jobs for sample-level parallelization
-        )
+        if batch_mode:
+            # Use batch-by-batch processing for memory efficiency
+            results = analyze_parameter_combination_batch_by_batch(
+                data_dir=data_dir,
+                param_combo=param_combo,
+                cutoffs=cutoffs,
+                metric_windows=metric_windows,
+                norm_order=norm_order,
+                value_type=value_type,
+                num_jobs=num_jobs,
+            )
+        else:
+            # Use original all-at-once processing
+            results = analyze_parameter_combination(
+                data_dir=data_dir,
+                param_combo=param_combo,
+                cutoffs=cutoffs,
+                metric_windows=metric_windows,
+                norm_order=norm_order,
+                value_type=value_type,
+                num_jobs=num_jobs,  # Pass num_jobs for sample-level parallelization
+            )
         results_list.append((param_combo, results))
 
     # Convert to dictionary
