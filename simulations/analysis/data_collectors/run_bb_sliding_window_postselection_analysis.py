@@ -36,11 +36,13 @@ def main():
 
     # Configuration for post-selection analysis
     postselection_config = {
-        "metric_windows": [3, 5, 7],
+        "metric_windows": [1, 2, 3, 5, 7],
         "norm_orders": [2],
         "value_types": ["llr"],
         "num_jobs": 18,
         "verbose": True,
+        "batch_mode": False,
+        "stats_only": True,
     }
 
     # =============================================================================
@@ -79,6 +81,8 @@ def main():
                     value_type=value_type,
                     num_jobs=postselection_config["num_jobs"],
                     verbose=postselection_config["verbose"],
+                    batch_mode=postselection_config["batch_mode"],
+                    stats_only=postselection_config["stats_only"],
                 )
 
                 # Save results immediately after processing this config
@@ -95,12 +99,16 @@ def main():
                                 pickle.dump(results, f)
 
                             total_saved_files.append(str(config_path))
-                            print(f"Saved {config_name}/{subdir} results to: {config_path}")
+                            print(
+                                f"Saved {config_name}/{subdir} results to: {config_path}"
+                            )
 
                 # Clear data from memory after saving
                 del batch_results
 
-    print(f"\nPost-selection analysis complete! Saved {len(total_saved_files)} result files.")
+    print(
+        f"\nPost-selection analysis complete! Saved {len(total_saved_files)} result files."
+    )
 
     # =============================================================================
     # Summary Generation
@@ -109,13 +117,17 @@ def main():
 
     print(f"\nReal-time post-selection analysis complete!")
     print(f"Results directory: {base_results_dir}")
-    
+
     # Calculate number of configurations processed
-    num_configs = (len(postselection_config["metric_windows"]) * 
-                   len(postselection_config["norm_orders"]) * 
-                   len(postselection_config["value_types"]))
-    
-    print(f"Saved {len(total_saved_files)} result files across {num_configs} configurations")
+    num_configs = (
+        len(postselection_config["metric_windows"])
+        * len(postselection_config["norm_orders"])
+        * len(postselection_config["value_types"])
+    )
+
+    print(
+        f"Saved {len(total_saved_files)} result files across {num_configs} configurations"
+    )
 
     # Show the organized file structure
     if total_saved_files:

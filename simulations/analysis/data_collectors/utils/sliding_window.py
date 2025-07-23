@@ -339,6 +339,12 @@ def calculate_window_cluster_norm_fracs_from_csr(
             f"Total columns ({total_cols}) is not divisible by num_faults ({num_faults})"
         )
 
+    # Validate eval_windows parameter
+    if eval_windows is not None:
+        start_win, end_win = eval_windows
+        if start_win < 0 or end_win < start_win:
+            raise ValueError(f"Invalid eval_windows: {eval_windows}. Start must be >= 0 and end must be >= start.")
+
     # Convert parameters to integers for numba
     value_type_int = {"size": 0, "llr": 1}[value_type]
     aggregation_type_int = {"avg": 0, "max": 1}[aggregation_type]
@@ -615,6 +621,23 @@ def calculate_committed_cluster_norm_fractions_from_csr(
 
     num_faults = len(priors)
     num_samples = committed_clusters_csr.shape[0]
+    
+    # Validate eval_windows parameter and ensure data structure consistency
+    if eval_windows is not None:
+        start_win, end_win = eval_windows
+        if start_win < 0 or end_win < start_win:
+            raise ValueError(f"Invalid eval_windows: {eval_windows}. Start must be >= 0 and end must be >= start.")
+        
+        # Ensure consistency between CSR matrix and committed_faults dimensions
+        num_windows = committed_clusters_csr.shape[1] // num_faults
+        if committed_clusters_csr.shape[1] % num_faults != 0:
+            raise ValueError(
+                f"CSR matrix columns ({committed_clusters_csr.shape[1]}) not divisible by num_faults ({num_faults})"
+            )
+        if len(committed_faults) != num_windows:
+            raise ValueError(
+                f"Data structure mismatch: {len(committed_faults)} committed_faults vs {num_windows} windows from CSR matrix"
+            )
 
     # Split CSR matrix by windows
     if _benchmarking:

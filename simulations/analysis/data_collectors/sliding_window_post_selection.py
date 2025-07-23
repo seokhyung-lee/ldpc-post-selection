@@ -215,9 +215,9 @@ class RealTimePostSelectionAnalyzer:
 
         # Compute metrics for each evaluatable window
         for i, window_idx in enumerate(range(first_eval_window, self.num_windows)):
-            # Evaluation window range: (window_idx - metric_windows + 1, window_idx + 1)
+            # Evaluation window range: [window_idx - metric_windows + 1, window_idx] (inclusive)
             eval_start = max(0, window_idx - metric_windows + 1)
-            eval_end = window_idx + 1
+            eval_end = window_idx
             eval_windows = (eval_start, eval_end)
 
             # Calculate committed cluster norm fractions for this evaluation window
