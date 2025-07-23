@@ -743,6 +743,7 @@ def analyze_parameter_combination(
     norm_order: float = 2.0,
     value_type: str = "llr",
     num_jobs: int = 1,
+    stats_only: bool = True,
 ) -> Dict[str, np.ndarray]:
     """
     Perform complete post-selection analysis for a single parameter combination.
@@ -763,11 +764,16 @@ def analyze_parameter_combination(
         Type of cluster value calculation ("size" or "llr").
     num_jobs : int, default=1
         Number of parallel jobs for sample-level processing.
+    stats_only : bool, default=True
+        If True, return only statistics (p_fail, p_abort, etc.). If False,
+        return both raw analysis results and statistics.
 
     Returns
     -------
     Dict[str, np.ndarray]
-        Complete post-selection statistics for all cutoffs.
+        Post-selection results for all cutoffs. If stats_only=True, returns
+        only statistical results. If stats_only=False, returns both raw
+        analysis results and statistics.
     """
     # Load simulation data
     committed_clusters_csr, committed_faults, priors, H, fails = (
@@ -807,10 +813,13 @@ def analyze_parameter_combination(
     # Compute comprehensive statistics
     statistics = analyzer.compute_postselection_statistics(results, fails)
 
-    # Combine results and statistics
-    combined_results = {**results, **statistics}
-
-    return combined_results
+    if stats_only:
+        # Return only statistics
+        return statistics
+    else:
+        # Combine results and statistics
+        combined_results = {**results, **statistics}
+        return combined_results
 
 
 def batch_postselection_analysis(
@@ -822,6 +831,7 @@ def batch_postselection_analysis(
     value_type: str = "llr",
     num_jobs: int = 1,
     batch_mode: bool = False,
+    stats_only: bool = True,
     verbose: bool = True,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
@@ -851,6 +861,10 @@ def batch_postselection_analysis(
         exceed memory capacity. Each batch is processed individually with
         statistics combined at the end. If False, load all batches at once
         (original behavior).
+    stats_only : bool, default=True
+        If True, return only statistics (p_fail, p_abort, etc.). If False,
+        return both raw results and statistics. Note: stats_only=False is not
+        supported when batch_mode=True due to memory constraints.
     verbose : bool, default=True
         Whether to print progress information.
 
@@ -859,15 +873,32 @@ def batch_postselection_analysis(
     Dict[str, Dict[str, np.ndarray]]
         Nested dictionary with results for each parameter combination.
         Structure: {param_combo: {result_key: result_array}}
+        
+        If stats_only=True (default), only statistical results are returned:
+        - 'p_fail', 'delta_p_fail', 'p_abort', 'effective_avg_trials',
+          'num_accepted', 'num_failed_accepted', 'cutoffs'
+        
+        If stats_only=False, both raw analysis results and statistics are returned:
+        - All statistical results (above) plus raw results like 'abort_windows',
+          'effective_trials', 'accepted_mask', 'metrics_matrix', etc.
     """
+    # Validate parameter combination
+    if batch_mode and not stats_only:
+        raise ValueError(
+            "stats_only=False is not supported when batch_mode=True due to memory constraints. "
+            "Raw results would be too large to store in memory for batch processing."
+        )
+    
     if verbose:
         mode_str = "batch-by-batch" if batch_mode else "all-at-once"
+        output_str = "statistics only" if stats_only else "full results + statistics"
         print(
             f"Starting {mode_str} post-selection analysis for {len(param_combinations)} combinations"
         )
         print(
             f"Testing {len(cutoffs)} cutoff values with {num_jobs} parallel jobs for sample processing"
         )
+        print(f"Output mode: {output_str}")
         if batch_mode:
             print("Using memory-efficient batch-by-batch processing mode")
 
@@ -889,7 +920,7 @@ def batch_postselection_analysis(
                 num_jobs=num_jobs,
             )
         else:
-            # Use original all-at-once processing
+            # Use all-at-once processing
             results = analyze_parameter_combination(
                 data_dir=data_dir,
                 param_combo=param_combo,
@@ -897,8 +928,10 @@ def batch_postselection_analysis(
                 metric_windows=metric_windows,
                 norm_order=norm_order,
                 value_type=value_type,
-                num_jobs=num_jobs,  # Pass num_jobs for sample-level parallelization
+                num_jobs=num_jobs,
+                stats_only=stats_only,
             )
+                
         results_list.append((param_combo, results))
 
     # Convert to dictionary
