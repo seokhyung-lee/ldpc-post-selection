@@ -231,7 +231,7 @@ class RealTimePostSelectionAnalyzer:
                 eval_windows=eval_windows,
                 _benchmarking=False,
                 num_jobs=num_jobs,
-                num_batches=num_jobs * 5,
+                # num_batches=num_jobs * 5,
                 verbose=3,
             )
 
@@ -314,15 +314,19 @@ class RealTimePostSelectionAnalyzer:
         """
         # For accepted samples: always 1.0
         # For aborted samples: 1.0 if aborted at last window, otherwise (abort_window + 1) * F / T
-        
+
         # Handle aborted samples with special case for last window
-        aborted_at_last_window = (abort_windows == self.num_windows - 1) & (~accepted_mask)
+        aborted_at_last_window = (abort_windows == self.num_windows - 1) & (
+            ~accepted_mask
+        )
         regular_aborted = (~accepted_mask) & (~aborted_at_last_window)
-        
+
         effective_trials = np.zeros_like(abort_windows, dtype=np.float64)
         effective_trials[accepted_mask] = 1.0  # Accepted samples: always 1.0
         effective_trials[aborted_at_last_window] = 1.0  # Aborted at last window: 1.0
-        effective_trials[regular_aborted] = ((abort_windows[regular_aborted] + 1) * self.F / self.T)  # Other aborted: formula
+        effective_trials[regular_aborted] = (
+            (abort_windows[regular_aborted] + 1) * self.F / self.T
+        )  # Other aborted: formula
 
         return effective_trials
 
@@ -393,7 +397,9 @@ class RealTimePostSelectionAnalyzer:
                 num_failed_accepted[i] = np.sum(failed_accepted)
 
                 # Average effective trials: sum of all trials divided by number of accepted samples
-                effective_avg_trials[i] = np.sum(effective_trials[:, i]) / num_accepted[i]
+                effective_avg_trials[i] = (
+                    np.sum(effective_trials[:, i]) / num_accepted[i]
+                )
             else:
                 num_failed_accepted[i] = 0
                 effective_avg_trials[i] = 0.0
@@ -540,7 +546,7 @@ def load_single_batch_data(
 
 
 def combine_batch_statistics(
-    batch_stats_list: List[Dict[str, np.ndarray]]
+    batch_stats_list: List[Dict[str, np.ndarray]],
 ) -> Dict[str, np.ndarray]:
     """
     Combine post-selection statistics from multiple batches.
@@ -574,7 +580,7 @@ def combine_batch_statistics(
     total_num_accepted = np.zeros(num_cutoffs, dtype=int)
     total_num_failed_accepted = np.zeros(num_cutoffs, dtype=int)
     total_samples = 0
-    
+
     # Arrays to store effective trials weighted by number of accepted samples
     weighted_effective_trials_sum = np.zeros(num_cutoffs, dtype=np.float64)
 
@@ -582,7 +588,7 @@ def combine_batch_statistics(
     for batch_stats in batch_stats_list:
         total_num_accepted += batch_stats["num_accepted"]
         total_num_failed_accepted += batch_stats["num_failed_accepted"]
-        
+
         # For effective_avg_trials, we need to weight by the number of accepted samples
         # batch_stats["effective_avg_trials"] is already the average for that batch
         # So we multiply by num_accepted to get the total effective trials for that batch
@@ -590,21 +596,19 @@ def combine_batch_statistics(
             batch_stats["effective_avg_trials"] * batch_stats["num_accepted"]
         )
         weighted_effective_trials_sum += batch_total_effective_trials
-        
+
         # Count total samples directly from batch sample count
         total_samples += batch_stats["batch_samples"]
-        
+
     # Calculate combined effective average trials
     effective_avg_trials = np.where(
-        total_num_accepted > 0,
-        weighted_effective_trials_sum / total_num_accepted,
-        0.0
+        total_num_accepted > 0, weighted_effective_trials_sum / total_num_accepted, 0.0
     )
 
     # Calculate combined p_fail and confidence intervals using get_confint
     p_fail = np.zeros(num_cutoffs, dtype=np.float64)
     delta_p_fail = np.zeros(num_cutoffs, dtype=np.float64)
-    
+
     # Only calculate confidence intervals where we have accepted samples
     valid_mask = total_num_accepted > 0
     if np.any(valid_mask):
@@ -615,7 +619,11 @@ def combine_batch_statistics(
         delta_p_fail[valid_mask] = delta_p_fail_valid
 
     # Calculate combined abort rate
-    p_abort = 1.0 - (total_num_accepted / total_samples) if total_samples > 0 else np.ones(num_cutoffs)
+    p_abort = (
+        1.0 - (total_num_accepted / total_samples)
+        if total_samples > 0
+        else np.ones(num_cutoffs)
+    )
 
     return {
         "p_fail": p_fail,
@@ -640,7 +648,7 @@ def analyze_parameter_combination_batch_by_batch(
 ) -> Dict[str, np.ndarray]:
     """
     Perform batch-by-batch post-selection analysis for a single parameter combination.
-    
+
     This function processes each batch individually to avoid memory issues with large datasets.
     For each batch, it loads data, computes statistics, stores only the statistics,
     and deletes the raw data from memory before processing the next batch.
@@ -686,7 +694,7 @@ def analyze_parameter_combination_batch_by_batch(
 
     for batch_dir in sorted(batch_dirs):
         print(f"Processing batch: {batch_dir.name}")
-        
+
         # Load data for this batch only
         committed_clusters_csr, committed_faults, priors, H, fails = (
             load_single_batch_data(data_dir, param_combo, batch_dir.name)
@@ -726,12 +734,12 @@ def analyze_parameter_combination_batch_by_batch(
         # Clear memory - delete large objects
         del committed_clusters_csr, committed_faults, priors, H, fails
         del analyzer, results
-        
+
         print(f"Completed batch: {batch_dir.name}")
 
     # Combine statistics from all batches
     combined_stats = combine_batch_statistics(batch_stats_list)
-    
+
     return combined_stats
 
 
@@ -873,11 +881,11 @@ def batch_postselection_analysis(
     Dict[str, Dict[str, np.ndarray]]
         Nested dictionary with results for each parameter combination.
         Structure: {param_combo: {result_key: result_array}}
-        
+
         If stats_only=True (default), only statistical results are returned:
         - 'p_fail', 'delta_p_fail', 'p_abort', 'effective_avg_trials',
           'num_accepted', 'num_failed_accepted', 'cutoffs'
-        
+
         If stats_only=False, both raw analysis results and statistics are returned:
         - All statistical results (above) plus raw results like 'abort_windows',
           'effective_trials', 'accepted_mask', 'metrics_matrix', etc.
@@ -888,7 +896,7 @@ def batch_postselection_analysis(
             "stats_only=False is not supported when batch_mode=True due to memory constraints. "
             "Raw results would be too large to store in memory for batch processing."
         )
-    
+
     if verbose:
         mode_str = "batch-by-batch" if batch_mode else "all-at-once"
         output_str = "statistics only" if stats_only else "full results + statistics"
@@ -931,7 +939,7 @@ def batch_postselection_analysis(
                 num_jobs=num_jobs,
                 stats_only=stats_only,
             )
-                
+
         results_list.append((param_combo, results))
 
     # Convert to dictionary

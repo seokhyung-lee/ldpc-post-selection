@@ -1,11 +1,9 @@
 data_ln
 data
-archive
-playgrounds.ipynb
 tesseract-decoder/
 SlidingWindowDecoder/
 .vscode
-legacy
+.python-version
 
 # Created by https://www.toptal.com/developers/gitignore/api/macos,python,visualstudiocode,jupyternotebooks
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,python,visualstudiocode,jupyternotebooks

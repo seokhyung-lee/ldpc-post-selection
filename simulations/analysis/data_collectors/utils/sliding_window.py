@@ -343,7 +343,9 @@ def calculate_window_cluster_norm_fracs_from_csr(
     if eval_windows is not None:
         start_win, end_win = eval_windows
         if start_win < 0 or end_win < start_win:
-            raise ValueError(f"Invalid eval_windows: {eval_windows}. Start must be >= 0 and end must be >= start.")
+            raise ValueError(
+                f"Invalid eval_windows: {eval_windows}. Start must be >= 0 and end must be >= start."
+            )
 
     # Convert parameters to integers for numba
     value_type_int = {"size": 0, "llr": 1}[value_type]
@@ -396,7 +398,7 @@ def _split_csr_by_windows(
     num_faults : int
         Number of faults per window.
     eval_windows : tuple of int, optional
-        If provided, only return windows from init_eval_window to final_eval_window.
+        If provided, only return windows from init_eval_window to final_eval_window (inclusive).
 
     Returns
     -------
@@ -593,7 +595,7 @@ def calculate_committed_cluster_norm_fractions_from_csr(
     value_type : str
         Type of values to calculate: "size" or "llr".
     eval_windows : tuple of int, optional
-        If provided, only consider windows from init_eval_window to final_eval_window.
+        If provided, only consider windows from init_eval_window to final_eval_window (inclusive).
     _benchmarking : bool, optional
         If True, print detailed timing information for performance analysis.
     num_jobs : int, optional
@@ -621,13 +623,15 @@ def calculate_committed_cluster_norm_fractions_from_csr(
 
     num_faults = len(priors)
     num_samples = committed_clusters_csr.shape[0]
-    
+
     # Validate eval_windows parameter and ensure data structure consistency
     if eval_windows is not None:
         start_win, end_win = eval_windows
         if start_win < 0 or end_win < start_win:
-            raise ValueError(f"Invalid eval_windows: {eval_windows}. Start must be >= 0 and end must be >= start.")
-        
+            raise ValueError(
+                f"Invalid eval_windows: {eval_windows}. Start must be >= 0 and end must be >= start."
+            )
+
         # Ensure consistency between CSR matrix and committed_faults dimensions
         num_windows = committed_clusters_csr.shape[1] // num_faults
         if committed_clusters_csr.shape[1] % num_faults != 0:

@@ -29,14 +29,14 @@ def main():
     # =============================================================================
 
     # Data directory configuration
-    data_dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
-    dataset_name = "bb_sliding_window"
+    data_dir_name = "surface_sliding_window_minsum_iter30_lsd0_raw"
+    dataset_name = "surface_sliding_window"
     data_dir = str(DATA_DIR / data_dir_name)
-    subdirs = ["n144_T12_p0.003_W3_F1"]
+    subdirs = ["d13_T13_p0.003_W5_F1"]
 
     # Configuration for post-selection analysis
     postselection_config = {
-        "metric_windows": [1, 2, 3, 5, 7],
+        "metric_windows": [3],
         "norm_orders": [2],
         "value_types": ["llr"],
         "num_jobs": 18,
@@ -50,7 +50,7 @@ def main():
     # =============================================================================
 
     # Define cutoff array for post-selection analysis
-    cutoffs = np.logspace(np.log10(0.004), -1, 10).round(6)
+    cutoffs = np.logspace(-3, -1, 20).round(6)
 
     print(
         f"Using cutoffs: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"
@@ -90,7 +90,7 @@ def main():
                     for subdir, results in batch_results.items():
                         if results:
                             # Create directory structure for this subdir
-                            subdir_dir = base_results_dir / "bb" / subdir
+                            subdir_dir = base_results_dir / "surface" / subdir
                             subdir_dir.mkdir(parents=True, exist_ok=True)
 
                             # Save individual config results
