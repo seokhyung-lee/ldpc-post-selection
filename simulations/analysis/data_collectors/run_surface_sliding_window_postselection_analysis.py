@@ -36,7 +36,7 @@ def main():
 
     # Configuration for post-selection analysis
     postselection_config = {
-        "metric_windows": [3],
+        "metric_windows": [1, 2, 3, 5, 7],
         "norm_orders": [2],
         "value_types": ["llr"],
         "num_jobs": 18,
@@ -50,7 +50,7 @@ def main():
     # =============================================================================
 
     # Define cutoff array for post-selection analysis
-    cutoffs = np.logspace(-3, -1, 20).round(6)
+    cutoffs = np.logspace(-3.5, -1, 20).round(6)
 
     print(
         f"Using cutoffs: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"

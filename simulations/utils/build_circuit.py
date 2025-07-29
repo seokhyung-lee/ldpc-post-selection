@@ -16,7 +16,7 @@ def build_surface_code_circuit(
     d: int,
     T: int,
     p: float = 0.0,
-    noise: str = "circuit-level",
+    noise: str | dict[str, float] = "circuit-level",
     only_z_detectors: bool = False,
 ) -> stim.Circuit:
     """
@@ -30,8 +30,10 @@ def build_surface_code_circuit(
         The number of measurement rounds.
     p : float, default=0.0
         The physical error rate.
-    noise : str, default="circuit-level"
+    noise : str | dict[str, float], default="circuit-level"
         The noise model type: ["circuit-level", "code-capacity", "phenom"].
+        If a dictionary is provided, the keys should be "clifford", "meas", "reset", and "depol",
+        and the values should be the corresponding error rates.
     only_z_detectors : bool, default=False
         Whether to only include Z-type detectors.
 
@@ -40,7 +42,12 @@ def build_surface_code_circuit(
     stim.Circuit
         The generated stim circuit.
     """
-    if noise in {"circuit-level", "circuit_level"}:
+    if isinstance(noise, dict):
+        p_clifford = noise["clifford"] if "clifford" in noise else 0
+        p_meas = noise["meas"] if "meas" in noise else 0
+        p_reset = noise["reset"] if "reset" in noise else 0
+        p_depol = noise["depol"] if "depol" in noise else 0
+    elif noise in {"circuit-level", "circuit_level"}:
         p_clifford = p_meas = p_reset = p
         p_depol = 0
     elif noise in {"code-capacity", "code_capacity"}:
