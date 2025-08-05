@@ -1,10 +1,10 @@
 """
-Real-time post-selection analysis for BB sliding window decoding simulations.
+Real-time post-selection analysis for surface sliding window decoding simulations.
 
-This script performs comprehensive post-selection analysis on existing BB sliding window
-simulation data, evaluating the effectiveness of real-time post-selection strategies
-without requiring re-simulation. It processes multiple parameter combinations and cutoff
-configurations to find optimal operating points.
+This script performs comprehensive analysis on existing surface sliding window
+simulation data, including both ordinary (no post-selection) baseline analysis
+and real-time post-selection analysis. It evaluates the effectiveness of
+real-time post-selection strategies without requiring re-simulation.
 """
 
 import pickle
@@ -15,13 +15,16 @@ from simulations.analysis.data_collectors.data_collection import DATA_DIR
 from simulations.analysis.data_collectors.sliding_window_post_selection import (
     batch_postselection_analysis,
 )
+from simulations.analysis.data_collectors.sliding_window_ordinary import (
+    batch_ordinary_analysis,
+)
 
 
 def main():
-    """Execute comprehensive real-time post-selection analysis for BB sliding window data."""
+    """Execute comprehensive sliding window analysis including ordinary and post-selection analysis."""
 
     print("=" * 60)
-    print("REAL-TIME POST-SELECTION ANALYSIS")
+    print("SLIDING WINDOW ANALYSIS")
     print("=" * 60)
 
     # =============================================================================
@@ -32,7 +35,17 @@ def main():
     data_dir_name = "surface_sliding_window_minsum_iter30_lsd0_raw"
     dataset_name = "surface_sliding_window"
     data_dir = str(DATA_DIR / data_dir_name)
-    subdirs = ["d13_T13_p0.003_W5_F1"]
+    subdirs = ["d13_T13_p0.003_W5_F1", "d13_T13_p0.005_W5_F1"]
+
+    # Analysis mode configuration
+    # Options: "ordinary_only", "postselection_only", "both"
+    analysis_mode = "both"
+
+    # Configuration for ordinary analysis
+    ordinary_config = {
+        "verbose": True,
+        "batch_mode": True,
+    }
 
     # Configuration for post-selection analysis
     postselection_config = {
@@ -46,15 +59,16 @@ def main():
     }
 
     # =============================================================================
-    # Cutoff Array Definition
+    # Cutoff Array Definition (for post-selection analysis)
     # =============================================================================
 
     # Define cutoff array for post-selection analysis
     cutoffs = np.logspace(-3.5, -1, 20).round(6)
 
-    print(
-        f"Using cutoffs: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"
-    )
+    if analysis_mode in ["postselection_only", "both"]:
+        print(
+            f"Using cutoffs: {len(cutoffs)} points, range [{cutoffs[0]:.6f}, {cutoffs[-1]:.6f}]"
+        )
 
     # =============================================================================
     # Analysis Execution
@@ -64,70 +78,129 @@ def main():
     base_results_dir = DATA_DIR / "real_time_post_selection"
     total_saved_files = []
 
-    for metric_windows in postselection_config["metric_windows"]:
-        for norm_order in postselection_config["norm_orders"]:
-            for value_type in postselection_config["value_types"]:
+    print(f"\nAnalysis mode: {analysis_mode}")
 
-                config_name = f"mw{metric_windows}_{value_type}_norm_frac_{norm_order}"
-                print(f"\nConfiguration: {config_name}")
+    # =============================================================================
+    # Ordinary Analysis (no post-selection)
+    # =============================================================================
 
-                # Run batch post-selection analysis
-                batch_results = batch_postselection_analysis(
-                    data_dir=data_dir,
-                    param_combinations=subdirs,
-                    cutoffs=cutoffs,
-                    metric_windows=metric_windows,
-                    norm_order=norm_order,
-                    value_type=value_type,
-                    num_jobs=postselection_config["num_jobs"],
-                    verbose=postselection_config["verbose"],
-                    batch_mode=postselection_config["batch_mode"],
-                    stats_only=postselection_config["stats_only"],
-                )
+    if analysis_mode in ["ordinary_only", "both"]:
+        print("\n" + "=" * 40)
+        print("ORDINARY ANALYSIS (NO POST-SELECTION)")
+        print("=" * 40)
 
-                # Save results immediately after processing this config
-                if batch_results:
-                    for subdir, results in batch_results.items():
-                        if results:
-                            # Create directory structure for this subdir
-                            subdir_dir = base_results_dir / "surface" / subdir
-                            subdir_dir.mkdir(parents=True, exist_ok=True)
+        # Run ordinary analysis
+        ordinary_results = batch_ordinary_analysis(
+            data_dir=data_dir,
+            param_combinations=subdirs,
+            batch_mode=ordinary_config["batch_mode"],
+            verbose=ordinary_config["verbose"],
+        )
 
-                            # Save individual config results
-                            config_path = subdir_dir / f"{config_name}.pkl"
-                            with open(config_path, "wb") as f:
-                                pickle.dump(results, f)
+        # Save ordinary results
+        if ordinary_results:
+            for subdir, results in ordinary_results.items():
+                if results:
+                    # Create directory structure for this subdir
+                    subdir_dir = base_results_dir / "surface" / subdir
+                    subdir_dir.mkdir(parents=True, exist_ok=True)
 
-                            total_saved_files.append(str(config_path))
-                            print(
-                                f"Saved {config_name}/{subdir} results to: {config_path}"
-                            )
+                    # Save ordinary analysis results
+                    ordinary_path = subdir_dir / "ordinary.pkl"
+                    with open(ordinary_path, "wb") as f:
+                        pickle.dump(results, f)
 
-                # Clear data from memory after saving
-                del batch_results
+                    total_saved_files.append(str(ordinary_path))
+                    print(f"Saved ordinary analysis results to: {ordinary_path}")
 
-    print(
-        f"\nPost-selection analysis complete! Saved {len(total_saved_files)} result files."
-    )
+        # Clear data from memory after saving
+        del ordinary_results
+
+    # =============================================================================
+    # Post-Selection Analysis
+    # =============================================================================
+
+    if analysis_mode in ["postselection_only", "both"]:
+        print("\n" + "=" * 40)
+        print("POST-SELECTION ANALYSIS")
+        print("=" * 40)
+
+        for metric_windows in postselection_config["metric_windows"]:
+            for norm_order in postselection_config["norm_orders"]:
+                for value_type in postselection_config["value_types"]:
+
+                    config_name = (
+                        f"mw{metric_windows}_{value_type}_norm_frac_{norm_order}"
+                    )
+                    print(f"\nConfiguration: {config_name}")
+
+                    # Run batch post-selection analysis
+                    batch_results = batch_postselection_analysis(
+                        data_dir=data_dir,
+                        param_combinations=subdirs,
+                        cutoffs=cutoffs,
+                        metric_windows=metric_windows,
+                        norm_order=norm_order,
+                        value_type=value_type,
+                        num_jobs=postselection_config["num_jobs"],
+                        verbose=postselection_config["verbose"],
+                        batch_mode=postselection_config["batch_mode"],
+                        stats_only=postselection_config["stats_only"],
+                    )
+
+                    # Save results immediately after processing this config
+                    if batch_results:
+                        for subdir, results in batch_results.items():
+                            if results:
+                                # Create directory structure for this subdir
+                                subdir_dir = base_results_dir / "surface" / subdir
+                                subdir_dir.mkdir(parents=True, exist_ok=True)
+
+                                # Save individual config results
+                                config_path = subdir_dir / f"{config_name}.pkl"
+                                with open(config_path, "wb") as f:
+                                    pickle.dump(results, f)
+
+                                total_saved_files.append(str(config_path))
+                                print(
+                                    f"Saved {config_name}/{subdir} results to: {config_path}"
+                                )
+
+                    # Clear data from memory after saving
+                    del batch_results
+
+    print(f"\nAnalysis complete! Saved {len(total_saved_files)} result files.")
 
     # =============================================================================
     # Summary Generation
     # =============================================================================
     print("=" * 60)
 
-    print(f"\nReal-time post-selection analysis complete!")
+    print(f"\nSliding window analysis complete!")
+    print(f"Analysis mode: {analysis_mode}")
     print(f"Results directory: {base_results_dir}")
 
     # Calculate number of configurations processed
-    num_configs = (
+    num_ordinary_configs = 1 if analysis_mode in ["ordinary_only", "both"] else 0
+    num_postselection_configs = (
         len(postselection_config["metric_windows"])
         * len(postselection_config["norm_orders"])
         * len(postselection_config["value_types"])
+        if analysis_mode in ["postselection_only", "both"]
+        else 0
     )
+    total_configs = num_ordinary_configs + num_postselection_configs
 
     print(
-        f"Saved {len(total_saved_files)} result files across {num_configs} configurations"
+        f"Saved {len(total_saved_files)} result files across {total_configs} configurations"
     )
+
+    if analysis_mode in ["ordinary_only", "both"]:
+        print(f"  - Ordinary analysis: {num_ordinary_configs} configuration")
+    if analysis_mode in ["postselection_only", "both"]:
+        print(
+            f"  - Post-selection analysis: {num_postselection_configs} configurations"
+        )
 
     # Show the organized file structure
     if total_saved_files:
@@ -137,7 +210,7 @@ def main():
             subdir_name = str(Path(file_path).parent.name)  # Extract subdir name
             config_name = str(Path(file_path).stem)  # Extract config name
             if subdir_name != current_subdir:
-                print(f"  bb/{subdir_name}/")
+                print(f"  surface/{subdir_name}/")
                 current_subdir = subdir_name
             print(f"    {config_name}.pkl")
 

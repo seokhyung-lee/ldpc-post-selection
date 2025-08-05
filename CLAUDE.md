@@ -59,6 +59,11 @@ For non-executable library code, relative imports are acceptable.
 2. **Data Aggregation**: Use code-specific scripts in `simulations/analysis/data_collectors/` for aggregating saved data.
 3. **Analysis**: Use Jupyter notebooks in `simulations/analysis/notebooks/` for visualization and statistical analysis.
 
+### Sliding Window Analysis
+- **Ordinary Analysis** (`sliding_window_ordinary.py`): Baseline analysis without post-selection, calculating `p_fail` and `delta_p_fail` assuming all samples are accepted
+- **Post-Selection Analysis** (`sliding_window_post_selection.py`): Complex post-selection analysis with cluster metrics and cutoff optimization
+- **Analysis Scripts** (`run_*_sliding_window_postselection_analysis.py`): Support three modes: `"ordinary_only"`, `"postselection_only"`, and `"both"` for comprehensive baseline vs. post-selection comparison
+
 ## Key Architectural Patterns
 
 ### Decoder Interface
