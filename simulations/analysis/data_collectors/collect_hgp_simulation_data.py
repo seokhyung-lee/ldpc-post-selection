@@ -8,27 +8,24 @@ if __name__ == "__main__":
     ascending_confidences = {
         "pred_llr": False,
         "detector_density": False,
-        "cluster_size_norm": False,
-        "cluster_llr_norm": False,
-        "cluster_size_norm_gap": True,
-        "cluster_llr_norm_gap": True,
+        "cluster_size_norm_frac": False,
+        "cluster_llr_norm_frac": False,
     }
 
     orders = [0.5, 1, 2, np.inf]
-    num_hist_bins = 10000
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "../data/hgp_(3,4)_minsum_iter30_lsd0")
+    data_dir = os.path.join(current_dir, "../../data/hgp_minsum_iter30_lsd0_raw")
 
     # Process HGP code data
     print("Processing HGP code data...")
     process_dataset(
         data_dir=data_dir,
         dataset_name="hgp",
+        dataset_type="hgp",
         ascending_confidences=ascending_confidences,
         orders=orders,
-        num_hist_bins=num_hist_bins,
-        decimals=(lambda by: 4 if by == "detector_density" else 2),
+        decimals=(lambda by: 2 if by == "pred_llr" else 4),
         verbose=False,
     )
 

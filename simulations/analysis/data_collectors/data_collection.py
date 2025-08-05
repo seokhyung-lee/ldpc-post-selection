@@ -96,12 +96,15 @@ def get_raw_data_subdirectories(
     """
     Get all subdirectories in the raw data directory with parameter info.
 
+    All dataset types now use the same single-level directory structure.
+
     Parameters
     ----------
     data_dir : str
         Path to the raw data directory.
     dataset_type : str
         Type of dataset ('surface', 'bb', 'hgp').
+        Kept for backward compatibility but no longer affects behavior.
 
     Returns
     -------
@@ -112,26 +115,11 @@ def get_raw_data_subdirectories(
     if not os.path.exists(data_dir):
         return subdirs
 
-    if dataset_type == "hgp":
-        # Nested directory structure: {circuit_folder}/{circuit_name}
-        for circuit_folder in os.listdir(data_dir):
-            circuit_folder_path = os.path.join(data_dir, circuit_folder)
-            if os.path.isdir(circuit_folder_path):
-                for circuit_name in os.listdir(circuit_folder_path):
-                    circuit_path = os.path.join(circuit_folder_path, circuit_name)
-                    if os.path.isdir(circuit_path):
-                        # Create parameter combination string
-                        param_combo_str = f"{circuit_folder}_{circuit_name}"
-                        subdirs.append(
-                            {"path": circuit_path, "param_combo_str": param_combo_str}
-                        )
-
-    else:
-        # Single-level directory structure: d{d}_T{T}_p{p} or n{n}_T{T}_p{p}
-        for item in os.listdir(data_dir):
-            item_path = os.path.join(data_dir, item)
-            if os.path.isdir(item_path):
-                subdirs.append({"path": item_path, "param_combo_str": item})
+    # Single-level directory structure: d{d}_T{T}_p{p}, n{n}_T{T}_p{p}, or dv{dv}_dc{dc}_n{n}_k{k}_d{d}_T{T}_p{p}
+    for item in os.listdir(data_dir):
+        item_path = os.path.join(data_dir, item)
+        if os.path.isdir(item_path):
+            subdirs.append({"path": item_path, "param_combo_str": item})
 
     return sorted(subdirs, key=lambda x: x["param_combo_str"])
 
@@ -335,8 +323,8 @@ def process_dataset(
     subdirs : Optional[List[str]], optional
         If provided, process only these specific subdirectories instead of all subdirectories.
         Should be a list of relative paths from data_dir to the target subdirectories.
-        For simple datasets: e.g., ['d13_T13_p0.001', 'd15_T15_p0.002'].
-        For HGP datasets: e.g., ['circuit_folder/circuit_name1', 'circuit_folder/circuit_name2'].
+        For example: ['d13_T13_p0.001', 'd15_T15_p0.002'] for surface codes,
+        ['n144_T12_p0.001_W3_F1'] for BB codes, or ['dv3_dc4_n225_k9_d6_T6_p0.001'] for HGP codes.
         If None or empty list, processes all subdirectories (default behavior).
     num_jobs : int, optional
         Number of parallel processes to use for multiprocessing. Default is 1 (sequential processing).
@@ -389,18 +377,8 @@ def process_dataset(
                 subdirs_info = []
                 for single_subdir in subdirs:
                     subdir_path = os.path.join(data_dir, single_subdir)
-                    if dataset_type == "hgp":
-                        # For HGP datasets, subdir should be like "circuit_folder/circuit_name"
-                        # Extract circuit_folder and circuit_name from the path
-                        path_parts = single_subdir.split(os.sep)
-                        if len(path_parts) == 2:
-                            circuit_folder, circuit_name = path_parts
-                            param_combo_str = f"{circuit_folder}_{circuit_name}"
-                        else:
-                            param_combo_str = single_subdir.replace(os.sep, "_")
-                    else:
-                        # For non-HGP datasets, subdir name is the param_combo_str
-                        param_combo_str = single_subdir
+                    # For all datasets, subdir name is the param_combo_str
+                    param_combo_str = single_subdir
 
                     subdirs_info.append(
                         {"path": subdir_path, "param_combo_str": param_combo_str}
