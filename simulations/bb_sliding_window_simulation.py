@@ -182,7 +182,7 @@ if __name__ == "__main__":
                 prms.append((n, T, p, window_size, commit_size))
 
     shots_per_batch = round(2e6)
-    total_shots = round(1e7)
+    total_shots = round(1e8)
     n_jobs = 18
     repeat = 10
     dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"

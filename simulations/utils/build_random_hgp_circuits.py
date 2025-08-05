@@ -136,7 +136,7 @@ def build_hgp_circuit_from_code(
     num_rounds: int,
     basis: str = "Z",
     noisy_init: bool = True,
-    noisy_meas: bool = False,
+    noisy_meas: bool = True,
     seed: Optional[int] = None,
 ) -> stim.Circuit:
     """
@@ -155,7 +155,7 @@ def build_hgp_circuit_from_code(
     noisy_init : bool
         Whether to include noise in initialization (default: True)
     noisy_meas : bool
-        Whether to include noise in measurements (default: False)
+        Whether to include noise in measurements (default: True)
     seed : int, optional
         Random seed for graph construction (default: None)
     Returns

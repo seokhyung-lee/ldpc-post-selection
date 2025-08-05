@@ -177,17 +177,20 @@ if __name__ == "__main__":
         "ignore", message="A worker stopped while some jobs were given to the executor."
     )
 
-    plist = [3e-3]
-    dlist = [13]  # [7, 9, 11, 13]
-
     # Sliding window parameters
-    window_size = 5
+    window_size = 3
     commit_size = 1
+
+    prms = []
+    for d in [5]:
+        T = d
+        for p in [5e-3]:
+            prms.append((d, T, p, window_size, commit_size))
 
     noise_model = "circuit-level"
 
-    shots_per_batch = round(5e6)
-    total_shots = round(5e8)
+    shots_per_batch = round(1e6)
+    total_shots = round(1e7)
     n_jobs = 18
     repeat = 10
     dir_name = "surface_sliding_window_minsum_iter30_lsd0_raw"
@@ -203,31 +206,26 @@ if __name__ == "__main__":
     data_dir = os.path.join(current_dir, f"data/{dir_name}")
     os.makedirs(data_dir, exist_ok=True)
 
-    print("dlist =", dlist)
-    print("plist =", plist)
-    print("window_size =", window_size)
-    print("commit_size =", commit_size)
-    print("decoder_prms =", decoder_prms)
+    print(f"Simulating total {total_shots} shots for {len(prms)} configurations")
 
     print(f"\n==== Starting sliding window simulations up to {total_shots} shots ====")
-    for d in dlist:
-        T = d
+    for prms in prms:
+        d, T, p, window_size, commit_size = prms
 
-        for i_p, p in enumerate(plist):
-            simulate(
-                shots=total_shots,
-                p=p,
-                d=d,
-                T=T,
-                window_size=window_size,
-                commit_size=commit_size,
-                data_dir=data_dir,
-                n_jobs=n_jobs,
-                repeat=repeat,
-                shots_per_batch=shots_per_batch,
-                decoder_prms=decoder_prms,
-                noise_model=noise_model,
-            )
+        simulate(
+            shots=total_shots,
+            p=p,
+            d=d,
+            T=T,
+            window_size=window_size,
+            commit_size=commit_size,
+            data_dir=data_dir,
+            n_jobs=n_jobs,
+            repeat=repeat,
+            shots_per_batch=shots_per_batch,
+            decoder_prms=decoder_prms,
+            noise_model=noise_model,
+        )
 
     t0 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==== Sliding window simulations completed ({t0}) ====")
