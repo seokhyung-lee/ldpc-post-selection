@@ -1,5 +1,5 @@
-[submodule "src/ldpc_post_selection/ext/SlidingWindowDecoder"]
-	path = ext/SlidingWindowDecoder
+[submodule "simulations/utils/SlidingWindowDecoder"]
+	path = simulations/utils/SlidingWindowDecoder
 	url = https://github.com/seokhyung-lee/SlidingWindowDecoder.git
 [submodule "src/ldpc_post_selection/ext/ldpc"]
 	path = ext/ldpc
