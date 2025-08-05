@@ -44,6 +44,7 @@ For non-executable library code, relative imports are acceptable.
 ### Simulation Framework (`simulations/`)
 - **Parallel execution**: Uses `joblib` for distributed simulation across multiple cores
 - **Code-specific simulations**: Surface code, color code, BB code, HGP code, toric code
+- **HGP simulation**: Uses prebuilt circuits from `simulations/data/hgp_prebuilt/circuits/` instead of on-the-fly generation
 - **Data collection**: Automated batch processing with configurable parameters
 - **Analysis pipeline**: Data aggregation → Metric calculation → Visualization
 
