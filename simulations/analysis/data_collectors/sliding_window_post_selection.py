@@ -1,5 +1,5 @@
 """
-Ultra-efficient retrospective real-time post-selection analysis for sliding window decoding.
+Real-time post-selection analysis for sliding window decoding.
 
 This module implements high-performance vectorized analysis of existing sliding window
 simulation data to evaluate real-time post-selection strategies without re-simulation.

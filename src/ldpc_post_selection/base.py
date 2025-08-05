@@ -78,4 +78,4 @@ class SoftOutputsDecoder:
         """
         Decode the detector measurement outcomes.
         """
-        raise NotImplementedError("Subclasses must implement this method.") 
+        raise NotImplementedError("Subclasses must implement this method.")

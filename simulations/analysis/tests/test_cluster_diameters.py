@@ -113,9 +113,7 @@ class TestClusterDiameter:
         self, simple_graph, n_jobs, return_max
     ):
         """Test parallel batch computation."""
-        clusters_np = np.array(
-            [[1, 1, 1, 2], [1, 0, 2, 1], [3, 3, 0, 0], [0, 4, 4, 4]]
-        )
+        clusters_np = np.array([[1, 1, 1, 2], [1, 0, 2, 1], [3, 3, 0, 0], [0, 4, 4, 4]])
         results = simple_graph.compute_cluster_diameters_batch(
             clusters_np, n_jobs=n_jobs, return_max_diameter=return_max
         )

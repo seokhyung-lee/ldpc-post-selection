@@ -430,9 +430,9 @@ def bplsd_sliding_window_simulation_task_single(
     all_clusters_list = []  # For CSR arrays
     committed_clusters_list = []  # For CSR arrays
     committed_faults = None  # Only extract once from first shot
-    
+
     max_cluster_idx = 0
-    
+
     for shot_idx in range(shots):
         # Use simulate_single with sliding window
         fail, soft_outputs = decoder.simulate_single(
@@ -441,35 +441,50 @@ def bplsd_sliding_window_simulation_task_single(
             commit_size=commit_size,
         )
         fails_list.append(fail)
-        
+
         # Extract all_clusters and committed_clusters
         all_clusters = soft_outputs["all_clusters"]  # List of numpy arrays (int)
-        committed_clusters = soft_outputs["committed_clusters"]  # List of numpy arrays (bool)
-        
+        committed_clusters = soft_outputs[
+            "committed_clusters"
+        ]  # List of numpy arrays (bool)
+
         # Extract committed_faults only from first shot (since it's deterministic)
         if shot_idx == 0:
-            committed_faults = soft_outputs["committed_faults"]  # List of numpy arrays (bool)
-        
+            committed_faults = soft_outputs[
+                "committed_faults"
+            ]  # List of numpy arrays (bool)
+
         # Concatenate all windows' clusters into a single array for this shot
-        all_clusters_concat = np.concatenate(all_clusters) if all_clusters else np.array([], dtype=int)
-        committed_clusters_concat = np.concatenate(committed_clusters) if committed_clusters else np.array([], dtype=bool)
-        
+        all_clusters_concat = (
+            np.concatenate(all_clusters) if all_clusters else np.array([], dtype=int)
+        )
+        committed_clusters_concat = (
+            np.concatenate(committed_clusters)
+            if committed_clusters
+            else np.array([], dtype=bool)
+        )
+
         # Track max cluster index for optimal dtype
         if len(all_clusters_concat) > 0:
             max_cluster_idx = max(max_cluster_idx, all_clusters_concat.max())
-        
+
         # Convert to CSR arrays (1D arrays will become single-row CSR arrays)
         all_clusters_list.append(sparse.csr_array(all_clusters_concat))
-        committed_clusters_list.append(sparse.csr_array(committed_clusters_concat, dtype=bool))
-    
+        committed_clusters_list.append(
+            sparse.csr_array(committed_clusters_concat, dtype=bool)
+        )
+
     fails_arr = np.array(fails_list)
-    
+
     # Stack all shots' CSR arrays into 2D CSR arrays
     # Determine optimal dtype for all_clusters based on max cluster index
     optimal_dtype = _get_optimal_uint_dtype(max_cluster_idx)
-    all_clusters_csr = sparse.vstack([sparse.csr_array(arr, dtype=optimal_dtype) for arr in all_clusters_list], format="csr")
+    all_clusters_csr = sparse.vstack(
+        [sparse.csr_array(arr, dtype=optimal_dtype) for arr in all_clusters_list],
+        format="csr",
+    )
     committed_clusters_csr = sparse.vstack(committed_clusters_list, format="csr")
-    
+
     return (
         fails_arr,
         all_clusters_csr,

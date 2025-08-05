@@ -891,7 +891,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         soft_outputs : dict
             Aggregated soft outputs from all windows containing:
             - all_clusters: list of cluster assignments for each window
-            - committed_clusters: list of boolean arrays after each window. 
+            - committed_clusters: list of boolean arrays after each window.
             True if fault is committed and in a cluster, False otherwise.
             - committed_faults: list of boolean arrays after each window.
             True if fault is committed, False otherwise.

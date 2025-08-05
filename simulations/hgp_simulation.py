@@ -190,7 +190,7 @@ if __name__ == "__main__":
     plist = [1e-3]
 
     shots_per_batch = round(1e6)
-    total_shots = round(1e6)
+    total_shots = round(1e7)
     n_jobs = 18
     repeat = 10
     dir_name = "hgp_minsum_iter30_lsd0_raw"
