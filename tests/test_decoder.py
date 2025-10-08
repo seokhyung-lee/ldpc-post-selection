@@ -3,12 +3,12 @@ import pytest
 import stim
 from scipy.sparse import csc_matrix
 
-from src.ldpc_post_selection.decoder import (
+from ldpc_post_selection.decoder import (
     SoftOutputsBpLsdDecoder,
     SoftOutputsDecoder,
     SoftOutputsMatchingDecoder,
 )
-from src.ldpc_post_selection.stim_tools import dem_to_parity_check
+from ldpc_post_selection.stim_tools import dem_to_parity_check
 
 
 @pytest.fixture
