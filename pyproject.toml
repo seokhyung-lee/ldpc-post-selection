@@ -18,7 +18,6 @@ dependencies = [
     "joblib>=1.4.2",
     "pandas>=2.2.3",
     "pyarrow>=20.0.0",
-    "joblib",
     "pytest",
     "numba",
     "rsmf",
