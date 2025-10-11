@@ -12,4 +12,6 @@ Requires Python >= 3.11
 git clone --recurse-submodules git@github.com:seokhyung-lee/ldpc-post-selection.git
 cd ldpc-post-selection
 pip install -e .
+# Optional: install simulation helpers
+pip install -e ./simulations
 ```

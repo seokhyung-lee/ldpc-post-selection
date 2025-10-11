@@ -13,25 +13,19 @@ dependencies = [
     "matplotlib>=3.10.1",
     "numpy>=2.2.4",
     "scipy>=1.15.3",
-    "statsmodels>=0.14.3",
     "stim>=1.14.0",
-    "joblib>=1.4.2",
-    "pandas>=2.2.3",
-    "pyarrow>=20.0.0",
     "pytest",
     "numba",
-    "rsmf",
-    "color-code-stim",
-    "scikit-learn",
-    "quits @ git+https://github.com/mkangquantum/quits.git",
+    "seaborn>=0.13.2",
+    "python-igraph",
+    "pymatching",
     "ldpc @ file:./ext/ldpc",
 ]
 
 [tool.setuptools]
-packages = ["simulations", "ldpc_post_selection"]
+packages = ["ldpc_post_selection"]
 
 [tool.setuptools.package-dir]
-"simulations" = "simulations"
 "ldpc_post_selection" = "src/ldpc_post_selection"
 
 [tool.setuptools.package-data]
