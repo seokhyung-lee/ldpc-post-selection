@@ -10,7 +10,7 @@ from ldpc.bplsd_decoder import BpLsdDecoder
 from scipy.sparse import csc_matrix, vstack
 
 from .base import SoftOutputsDecoder
-from .cluster_tools import compute_cluster_stats, label_clusters
+from .cluster_tools import compute_cluster_stats
 
 
 class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
@@ -108,61 +108,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
 
         # Precompute adjacency matrix for efficient cluster labeling
         self._adjacency_matrix = (self.H.T @ self.H == 1).astype(bool)
-
-    @staticmethod
-    def _compute_norm_fractions(
-        values: np.ndarray, orders: List[float]
-    ) -> Dict[float, float]:
-        """
-        Compute norm fractions for given values and orders.
-
-        Parameters
-        ----------
-        values : 1D numpy array of float
-            Values to compute norm fractions for (e.g., cluster sizes or LLRs).
-            values[0] is assumed to be the outside region and is excluded.
-        orders : list of float
-            Orders for norm computation (can include np.inf).
-
-        Returns
-        -------
-        norm_fractions : dict
-            Dictionary mapping order to norm fraction value.
-        """
-        norm_fractions = {}
-
-        # Get values excluding the outside region (index 0)
-        inside_values = values[1:] if len(values) > 1 else np.array([])
-        total_sum = np.sum(values)
-
-        if len(inside_values) == 0 or total_sum == 0:
-            # No clusters or zero sum, return 0 for all orders
-            for order in orders:
-                norm_fractions[order] = 0.0
-        else:
-            for order in orders:
-                if order == np.inf:
-                    # Max norm
-                    norm_frac = (
-                        np.max(inside_values) / total_sum
-                        if len(inside_values) > 0
-                        else 0.0
-                    )
-                elif order == 0.5:
-                    # L0.5 norm (special case for efficiency)
-                    norm_frac = np.sum(np.sqrt(inside_values)) ** 2 / total_sum
-                elif order == 1:
-                    # L1 norm (special case for efficiency)
-                    norm_frac = np.sum(inside_values) / total_sum
-                elif order == 2:
-                    # L2 norm (special case for efficiency)
-                    norm_frac = np.sqrt(np.sum(inside_values**2)) / total_sum
-                else:
-                    # General Lp norm
-                    norm_frac = np.sum(inside_values**order) ** (1 / order) / total_sum
-                norm_fractions[order] = float(norm_frac)
-
-        return norm_fractions
 
     @property
     def detector_time_coords(self) -> np.ndarray:
@@ -606,7 +551,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         include_cluster_stats: bool = True,
         compute_logical_gap_proxy: bool = False,
         explore_only_nearby_logical_classes: bool = True,
-        norm_frac_orders: Optional[List[float]] = None,
         verbose: bool = False,
         _benchmarking: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray, bool, Dict[str, Any]]:
@@ -627,10 +571,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             If True, only explore adjacent logical classes for gap proxy computation.
             If False, explore all possible logical classes. Only used when
             compute_logical_gap_proxy is True. Defaults to True.
-        norm_frac_orders : list of float, optional
-            Orders for computing norm fractions of cluster sizes and LLRs.
-            Can include positive numbers and np.inf. If provided, norm fractions
-            are computed and stored in soft_outputs. Defaults to None.
         verbose : bool, optional
             If True, print progress information. Defaults to False.
         _benchmarking : bool
@@ -778,33 +718,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
                 print(
                     f"[Benchmarking] Store cluster outputs: {time.time() - cluster_start:.6f}s"
                 )
-
-            # Compute norm fractions if requested
-            if norm_frac_orders is not None:
-                if _benchmarking:
-                    norm_frac_start = time.time()
-
-                # Compute norm fractions for cluster sizes
-                size_norm_fracs = self._compute_norm_fractions(
-                    cluster_sizes, norm_frac_orders
-                )
-                for order, norm_frac in size_norm_fracs.items():
-                    soft_outputs[f"cluster_size_norm_frac_{order}"] = norm_frac
-
-                # Compute norm fractions for cluster LLRs
-                llr_norm_fracs = self._compute_norm_fractions(
-                    cluster_llrs, norm_frac_orders
-                )
-                for order, norm_frac in llr_norm_fracs.items():
-                    soft_outputs[f"cluster_llr_norm_frac_{order}"] = norm_frac
-
-                if _benchmarking:
-                    print(
-                        f"[Benchmarking] Compute norm fractions: {time.time() - norm_frac_start:.6f}s"
-                    )
-
-                if verbose:
-                    print(f"Computed norm fractions for orders: {norm_frac_orders}")
 
             if _benchmarking:
                 step_start = time.time()

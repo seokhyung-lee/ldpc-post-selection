@@ -16,6 +16,7 @@ dependencies = [
     "stim>=1.14.0",
     "pytest",
     "numba",
+    'tqdm',
     "seaborn>=0.13.2",
     "python-igraph",
     "pymatching",

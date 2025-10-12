@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Dict, List
 
 import numba
 import numpy as np
@@ -34,6 +34,51 @@ def compute_cluster_stats(
     cluster_llrs = np.bincount(clusters, weights=llrs, minlength=max_cluster_id + 1)
 
     return cluster_sizes, cluster_llrs
+
+
+def compute_norm_fraction(values: np.ndarray, order: float) -> float:
+    """
+    Compute norm fraction for given values and order.
+
+    Parameters
+    ----------
+    values : 1D numpy array of float
+        Values to compute norm fraction for (e.g., cluster sizes or LLRs).
+        values[0] is assumed to be the outside region and is excluded.
+    order : float
+        Order for norm computation (can be a positive number or `np.inf`).
+
+    Returns
+    -------
+    norm_fraction : float
+        Norm fraction value for the given order.
+    """
+    # Get values excluding the outside region (index 0)
+    inside_values = values[1:] if len(values) > 1 else np.array([])
+    total_sum = np.sum(values)
+
+    if len(inside_values) == 0 or total_sum == 0:
+        # No clusters or zero sum, return 0
+        return 0.0
+    else:
+        if order == np.inf:
+            # Max norm
+            norm_frac = (
+                np.max(inside_values) / total_sum if len(inside_values) > 0 else 0.0
+            )
+        elif order == 0.5:
+            # L0.5 norm (special case for efficiency)
+            norm_frac = np.sum(np.sqrt(inside_values)) ** 2 / total_sum
+        elif order == 1:
+            # L1 norm (special case for efficiency)
+            norm_frac = np.sum(inside_values) / total_sum
+        elif order == 2:
+            # L2 norm (special case for efficiency)
+            norm_frac = np.sqrt(np.sum(inside_values**2)) / total_sum
+        else:
+            # General Lp norm
+            norm_frac = np.sum(inside_values**order) ** (1 / order) / total_sum
+        return float(norm_frac)
 
 
 def label_clusters(
