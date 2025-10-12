@@ -37,6 +37,7 @@ class RealTimePostSelectionAnalyzer:
         committed_faults: List[np.ndarray],
         priors: np.ndarray,
         H: np.ndarray,
+        W: int,
         F: int,
         T: int,
         num_faults_per_window: int,
@@ -55,6 +56,8 @@ class RealTimePostSelectionAnalyzer:
             Prior error probabilities for each fault.
         H : np.ndarray
             Parity check matrix for cluster analysis.
+        W : int
+            Window size (number of rounds per window).
         F : int
             Commit size (number of rounds committed per window).
         T : int
@@ -67,8 +70,11 @@ class RealTimePostSelectionAnalyzer:
         self.priors = priors
         self.H = H
         self.F = F
+        self.W = W
         self.T = T
         self.num_faults_per_window = num_faults_per_window
+
+        assert W >= F, "Window size must be greater than or equal to commit size."
 
         # Derived properties
         self.num_samples = committed_clusters_csr.shape[0]
@@ -313,7 +319,8 @@ class RealTimePostSelectionAnalyzer:
             Shape (num_samples, num_cutoffs) - effective number of trials.
         """
         # For accepted samples: always 1.0
-        # For aborted samples: 1.0 if aborted at last window, otherwise (abort_window + 1) * F / T
+        # For aborted samples:
+        # 1.0 if aborted at last window, otherwise (abort_window * F + W) / T
 
         # Handle aborted samples with special case for last window
         aborted_at_last_window = (abort_windows == self.num_windows - 1) & (
@@ -325,8 +332,8 @@ class RealTimePostSelectionAnalyzer:
         effective_trials[accepted_mask] = 1.0  # Accepted samples: always 1.0
         effective_trials[aborted_at_last_window] = 1.0  # Aborted at last window: 1.0
         effective_trials[regular_aborted] = (
-            (abort_windows[regular_aborted] + 1) * self.F / self.T
-        )  # Other aborted: formula
+            abort_windows[regular_aborted] * self.F + self.W
+        ) / self.T  # Other aborted: formula
 
         return effective_trials
 
@@ -688,6 +695,7 @@ def analyze_parameter_combination_batch_by_batch(
     # Parse parameters from combo string (needed for analyzer initialization)
     parts = param_combo.split("_")
     F = int(parts[-1][1:])  # Extract F from "F1"
+    W = int(parts[-2][1:])  # Extract W from "W3"
     T = int(parts[-4][1:])  # Extract T from "T12"
 
     batch_stats_list = []
@@ -712,6 +720,7 @@ def analyze_parameter_combination_batch_by_batch(
             priors=priors,
             H=H,
             F=F,
+            W=W,
             T=T,
             num_faults_per_window=num_faults_per_window,
         )
@@ -791,6 +800,7 @@ def analyze_parameter_combination(
     # Parse parameters from combo string
     parts = param_combo.split("_")
     F = int(parts[-1][1:])  # Extract F from "F1"
+    W = int(parts[-2][1:])  # Extract W from "W3"
     T = int(parts[-4][1:])  # Extract T from "T12"
 
     # Determine number of faults per window from data structure
@@ -805,6 +815,7 @@ def analyze_parameter_combination(
         priors=priors,
         H=H,
         F=F,
+        W=W,
         T=T,
         num_faults_per_window=num_faults_per_window,
     )
