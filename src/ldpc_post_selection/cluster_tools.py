@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List
+from typing import Tuple
 
 import numba
 import numpy as np
@@ -36,7 +36,7 @@ def compute_cluster_stats(
     return cluster_sizes, cluster_llrs
 
 
-def compute_norm_fraction(values: np.ndarray, order: float) -> float:
+def compute_cluster_norm_fraction(values: np.ndarray, order: float) -> float:
     """
     Compute norm fraction for given values and order.
 
@@ -54,31 +54,16 @@ def compute_norm_fraction(values: np.ndarray, order: float) -> float:
         Norm fraction value for the given order.
     """
     # Get values excluding the outside region (index 0)
-    inside_values = values[1:] if len(values) > 1 else np.array([])
-    total_sum = np.sum(values)
-
-    if len(inside_values) == 0 or total_sum == 0:
-        # No clusters or zero sum, return 0
+    inside_values = values[1:] if values.size > 1 else np.array([], dtype=values.dtype)
+    if inside_values.size == 0:
         return 0.0
-    else:
-        if order == np.inf:
-            # Max norm
-            norm_frac = (
-                np.max(inside_values) / total_sum if len(inside_values) > 0 else 0.0
-            )
-        elif order == 0.5:
-            # L0.5 norm (special case for efficiency)
-            norm_frac = np.sum(np.sqrt(inside_values)) ** 2 / total_sum
-        elif order == 1:
-            # L1 norm (special case for efficiency)
-            norm_frac = np.sum(inside_values) / total_sum
-        elif order == 2:
-            # L2 norm (special case for efficiency)
-            norm_frac = np.sqrt(np.sum(inside_values**2)) / total_sum
-        else:
-            # General Lp norm
-            norm_frac = np.sum(inside_values**order) ** (1 / order) / total_sum
-        return float(norm_frac)
+
+    total_sum = float(np.sum(values))
+    if total_sum == 0.0:
+        return 0.0
+
+    inside_norm = compute_lp_norm(inside_values.astype(float, copy=False), order)
+    return inside_norm / total_sum
 
 
 def label_clusters(
@@ -175,3 +160,39 @@ def label_clusters_igraph(
     cluster_idx[vertices_inside_clusters] = membership
 
     return cluster_idx
+
+
+def compute_lp_norm(values: np.ndarray, order: float, take_abs: bool = False) -> float:
+    """
+    Compute an L_p norm for 1D values with optional absolute values.
+
+    Parameters
+    ----------
+    values : 1D numpy array of float
+        Values for which the norm should be computed.
+    order : float
+        Order for the L_p norm (positive number or `np.inf`).
+    take_abs : bool, optional
+        If True, take absolute values before the norm calculation. Defaults to False.
+
+    Returns
+    -------
+    norm_value : float
+        Calculated norm of the provided values.
+    """
+    if values.size == 0:
+        return 0.0
+
+    processed = np.abs(values) if take_abs else values
+
+    if processed.size == 0:
+        return 0.0
+
+    if order == 1:
+        return float(np.sum(processed))
+    if order == 2:
+        return float(np.sqrt(np.sum(processed**2)))
+    if np.isinf(order):
+        return float(np.max(processed)) if processed.size > 0 else 0.0
+
+    return float(np.sum(processed**order) ** (1.0 / order))
