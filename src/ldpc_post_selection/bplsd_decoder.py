@@ -103,8 +103,6 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             self._detector_time_coords = None
             self._det_time_coord_index = detector_time_coords
 
-        self._check_detector_time_coords_validity()
-
         # Initialize caches for sliding window decoding
         self._window_structure_cache: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
         self._decoder_cache: Dict[str, SoftOutputsBpLsdDecoder] = {}
@@ -817,6 +815,9 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             - committed_faults: list of boolean arrays after each window.
             True if fault is committed, False otherwise.
         """
+
+        self._check_detector_time_coords_validity()
+
         if window_size <= commit_size:
             raise ValueError("W must be greater than F")
 
