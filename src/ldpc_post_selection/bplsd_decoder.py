@@ -102,6 +102,8 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             self._detector_time_coords = None
             self._det_time_coord_index = detector_time_coords
 
+        self._check_detector_time_coords_validity()
+
         # Initialize caches for sliding window decoding
         self._window_structure_cache: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
         self._decoder_cache: Dict[str, SoftOutputsBpLsdDecoder] = {}
@@ -128,6 +130,11 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             det_time_coords = np.array(det_time_coords, dtype=int)
             self._detector_time_coords = det_time_coords
             return det_time_coords.copy()
+
+    def _check_detector_time_coords_validity(self):
+        time_coords = self.detector_time_coords
+        if min(time_coords) != 0:
+            raise ValueError("Detector time coordinates must start from 0")
 
     def _get_logical_classes_to_explore(
         self,
