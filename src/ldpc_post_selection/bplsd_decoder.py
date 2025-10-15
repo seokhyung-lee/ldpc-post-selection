@@ -86,6 +86,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         self._bplsd = BpLsdDecoder(
             self.H,
             error_channel=self.priors,
+            always_run_lsd=True,
             **bplsd_kwargs,
         )
         self._bplsd.set_do_stats(True)
@@ -629,7 +630,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
             print(f"Number of violated detectors: {detector_outcomes.sum()}")
 
         bplsd = self._bplsd
-        pred, pred_bp = bplsd.decode(detector_outcomes, custom=True)
+        pred, pred_bp = bplsd.decode(detector_outcomes, return_bp_correction=True)
         pred: np.ndarray = pred.astype(bool)
         pred_bp: np.ndarray = pred_bp.astype(bool)
 

@@ -35,8 +35,8 @@ def main():
     data_dir_name = "bb_sliding_window_minsum_iter30_lsd0_raw"
     dataset_name = "bb_sliding_window"
     data_dir = str(DATA_DIR / data_dir_name)
-    # subdirs = ["n144_T12_p0.005_W3_F1"]
-    subdirs = [f"n144_T{T}_p0.003_W3_F1" for T in range(6, 25, 3)]
+    subdirs = ["n144_T12_p0.003_W3_F1", "n144_T12_p0.005_W3_F1"]
+    # subdirs = [f"n144_T{T}_p0.003_W3_F1" for T in range(6, 25, 3)]
 
     # Analysis mode configuration
     # Options: "ordinary_only", "postselection_only", "both"
@@ -50,10 +50,10 @@ def main():
 
     # Configuration for post-selection analysis
     postselection_config = {
-        "metric_windows": [3],
+        "metric_windows": [1, 2, 3, 5, 7],
         "norm_orders": [2],
         "value_types": ["llr"],
-        "num_jobs": 18,
+        "num_jobs": 8,
         "verbose": True,
         "batch_mode": True,
         "stats_only": True,

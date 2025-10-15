@@ -35,7 +35,7 @@ def main():
     data_dir_name = "surface_sliding_window_minsum_iter30_lsd0_raw"
     dataset_name = "surface_sliding_window"
     data_dir = str(DATA_DIR / data_dir_name)
-    subdirs = ["d13_T13_p0.003_W5_F1", "d13_T13_p0.005_W5_F1"]
+    subdirs = ["d13_T13_p0.005_W5_F1"]
 
     # Analysis mode configuration
     # Options: "ordinary_only", "postselection_only", "both"
@@ -52,7 +52,7 @@ def main():
         "metric_windows": [1, 2, 3, 5, 7],
         "norm_orders": [2],
         "value_types": ["llr"],
-        "num_jobs": 18,
+        "num_jobs": 8,
         "verbose": True,
         "batch_mode": True,
         "stats_only": True,
