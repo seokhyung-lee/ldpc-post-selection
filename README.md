@@ -19,7 +19,7 @@ Our post-selection strategies are expected to be particularly useful for offline
 
 Requires Python >= 3.11
 
-**WARNING:** It’s strongly recommended to use a virtual environment, **especially if the [`ldpc` package](https://github.com/quantumgizmos/ldpc) is already installed**. This package includes a **[modified version of `ldpc`](https://github.com/seokhyung-lee/ldpc)** (where BP+LSD is modified to run LSD regardless of BP converegence & return additional stat info), which can conflict with an existing installation. We will send a pull request to the original repo shortly to resolve this problem.
+**WARNING:** It’s strongly recommended to use a virtual environment.
 
 ```bash
 git clone --recurse-submodules git@github.com:seokhyung-lee/ldpc-post-selection.git

@@ -630,7 +630,7 @@ class SoftOutputsBpLsdDecoder(SoftOutputsDecoder):
         bplsd = self._bplsd
         pred = bplsd.decode(detector_outcomes)
         pred: np.ndarray = pred.astype(bool)
-        pred_bp: np.ndarray = bplsd.bp_output.astype(bool)
+        pred_bp: np.ndarray = bplsd.bp_decoding.astype(bool)
 
         if _benchmarking:
             print(f"[Benchmarking] BP+LSD decoding: {time.time() - step_start:.6f}s")
