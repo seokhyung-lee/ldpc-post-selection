@@ -19,15 +19,15 @@ Our post-selection strategies are expected to be particularly useful for offline
 
 Requires Python >= 3.11
 
-**WARNING:** It’s strongly recommended to use a virtual environment.
-
 ```bash
-git clone --recurse-submodules git@github.com:seokhyung-lee/ldpc-post-selection.git
+git clone --recurse-submodules https://github.com/seokhyung-lee/ldpc-post-selection.git
 cd ldpc-post-selection
 pip install -e .
 # Optional: install codes used for the numerical analyses in our paper.
 pip install -e ./simulations
 ```
+
+([Our custom `ldpc` package](https://github.com/seokhyung-lee/ldpc) has been merged into v2.4.0 of the [original package](https://github.com/quantumgizmos/ldpc), so it's no longer necessary to install it separately.)
 
 ## Usage
 
